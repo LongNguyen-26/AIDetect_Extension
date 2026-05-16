@@ -8,7 +8,8 @@ const DEFAULT_SETTINGS = {
   aidetectAdminMinTextLength: 8,
   aidetectAdminGroupRules: "",
   aidetectAdminAutoSkipInvalid: false,
-  aidetectAdminAutoAction: "approve_only"
+  aidetectAdminAutoAction: "approve_only",
+  aidetectAdminAutoRunning: false
 };
 
 const DEFAULT_STATS = {
@@ -28,7 +29,7 @@ const elements = {
   thresholdValue: document.getElementById("thresholdValue"),
   groupRules: document.getElementById("groupRules"),
   autoAction: document.getElementById("autoAction"),
-  autoSkipInvalid: document.getElementById("autoSkipInvalid"),
+  startModeration: document.getElementById("startModeration"),
   scannedCount: document.getElementById("scannedCount"),
   warnedCount: document.getElementById("warnedCount"),
   highRiskCount: document.getElementById("highRiskCount"),
@@ -38,6 +39,11 @@ const elements = {
   silentLegend: document.getElementById("silentLegend"),
   resetStats: document.getElementById("resetStats"),
   saveStatus: document.getElementById("saveStatus")
+};
+
+const popupState = {
+  mode: DEFAULT_SETTINGS.aidetectAdminMode,
+  autoRunning: DEFAULT_SETTINGS.aidetectAdminAutoRunning
 };
 
 document.addEventListener("DOMContentLoaded", initPopup);
@@ -77,11 +83,20 @@ function bindEvents() {
     const value = VALID_AUTO_ACTIONS.has(elements.autoAction.value)
       ? elements.autoAction.value
       : DEFAULT_SETTINGS.aidetectAdminAutoAction;
-    saveSettings({ aidetectAdminAutoAction: value });
+    saveSettings({
+      aidetectAdminAutoAction: value,
+      aidetectAdminAutoSkipInvalid: value === "approve_only"
+    });
   });
 
-  elements.autoSkipInvalid.addEventListener("change", () => {
-    saveSettings({ aidetectAdminAutoSkipInvalid: elements.autoSkipInvalid.checked });
+  elements.startModeration.addEventListener("click", () => {
+    const nextRunning = !popupState.autoRunning;
+    saveSettings({
+      aidetectAdminMode: "auto",
+      aidetectAdminEnabled: true,
+      aidetectAdminAutoRunning: nextRunning
+    });
+    updateModeUi("auto", nextRunning);
   });
 
   elements.resetStats.addEventListener("click", () => {
@@ -105,20 +120,20 @@ function setupStorageListener() {
     if (areaName !== "sync") return;
 
     if (changes.aidetectAdminMode) {
-      updateModeUi(normalizeMode(changes.aidetectAdminMode.newValue));
+      updateModeUi(normalizeMode(changes.aidetectAdminMode.newValue), popupState.autoRunning);
     }
 
     if (changes.aidetectAdminGroupRules && document.activeElement !== elements.groupRules) {
       elements.groupRules.value = String(changes.aidetectAdminGroupRules.newValue || "");
     }
 
-    if (changes.aidetectAdminAutoSkipInvalid) {
-      elements.autoSkipInvalid.checked = Boolean(changes.aidetectAdminAutoSkipInvalid.newValue);
-    }
-
     if (changes.aidetectAdminAutoAction) {
       const action = normalizeAutoAction(changes.aidetectAdminAutoAction.newValue);
       elements.autoAction.value = action;
+    }
+
+    if (changes.aidetectAdminAutoRunning) {
+      updateModeUi(popupState.mode, Boolean(changes.aidetectAdminAutoRunning.newValue));
     }
   });
 }
@@ -150,12 +165,17 @@ function buildSettingsMigration(items, settings) {
     "aidetectAdminMinTextLength",
     "aidetectAdminGroupRules",
     "aidetectAdminAutoSkipInvalid",
-    "aidetectAdminAutoAction"
+    "aidetectAdminAutoAction",
+    "aidetectAdminAutoRunning"
   ].forEach((key) => {
     if (!Object.prototype.hasOwnProperty.call(items, key)) {
       migration[key] = settings[key];
     }
   });
+
+  if (items.aidetectAdminAutoSkipInvalid !== settings.aidetectAdminAutoSkipInvalid) {
+    migration.aidetectAdminAutoSkipInvalid = settings.aidetectAdminAutoSkipInvalid;
+  }
 
   const legacyEnabled = settings.aidetectAdminMode !== "off";
   if (!Object.prototype.hasOwnProperty.call(items, "aidetectAdminEnabled") || items.aidetectAdminEnabled !== legacyEnabled) {
@@ -190,7 +210,8 @@ function normalizeSettings(items) {
     Number(settings.aidetectAdminMinTextLength) || DEFAULT_SETTINGS.aidetectAdminMinTextLength
   );
   settings.aidetectAdminGroupRules = String(settings.aidetectAdminGroupRules || "");
-  settings.aidetectAdminAutoSkipInvalid = Boolean(settings.aidetectAdminAutoSkipInvalid);
+  settings.aidetectAdminAutoSkipInvalid = settings.aidetectAdminAutoAction === "approve_only";
+  settings.aidetectAdminAutoRunning = Boolean(settings.aidetectAdminAutoRunning);
 
   return settings;
 }
@@ -199,8 +220,7 @@ function applySettings(settings) {
   renderThreshold(settings.aidetectAdminThreshold);
   elements.groupRules.value = settings.aidetectAdminGroupRules;
   elements.autoAction.value = settings.aidetectAdminAutoAction;
-  elements.autoSkipInvalid.checked = settings.aidetectAdminAutoSkipInvalid;
-  updateModeUi(settings.aidetectAdminMode);
+  updateModeUi(settings.aidetectAdminMode, settings.aidetectAdminAutoRunning);
 }
 
 function setMode(mode) {
@@ -208,7 +228,8 @@ function setMode(mode) {
   updateModeUi(normalizedMode);
   saveSettings({
     aidetectAdminMode: normalizedMode,
-    aidetectAdminEnabled: normalizedMode !== "off"
+    aidetectAdminEnabled: normalizedMode !== "off",
+    aidetectAdminAutoRunning: false
   });
 }
 
@@ -216,7 +237,7 @@ function saveSettings(values) {
   chrome.storage.sync.set(values, () => flashStatus("Đã lưu"));
 }
 
-function updateModeUi(mode) {
+function updateModeUi(mode, autoRunning = false) {
   const copy = {
     off: {
       label: "Chưa kích hoạt"
@@ -225,16 +246,22 @@ function updateModeUi(mode) {
       label: "Đang quét thủ công - hãy lướt bài"
     },
     auto: {
-      label: "Đang tự động kiểm duyệt"
+      label: autoRunning ? "Đang tự động kiểm duyệt" : "Đã chọn tự động - bấm Bắt đầu duyệt"
     }
   };
   const normalizedMode = normalizeMode(mode);
   const modeCopy = copy[normalizedMode] || copy.off;
+  const running = normalizedMode === "auto" && Boolean(autoRunning);
+
+  popupState.mode = normalizedMode;
+  popupState.autoRunning = running;
 
   elements.modeButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.mode === normalizedMode);
   });
   elements.modeLabel.textContent = modeCopy.label;
+  elements.startModeration.textContent = running ? "Dừng duyệt" : "Bắt đầu duyệt";
+  elements.startModeration.classList.toggle("running", running);
   updateSectionVisibility(normalizedMode);
 }
 

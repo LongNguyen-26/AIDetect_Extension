@@ -8,7 +8,8 @@ const DEFAULT_SETTINGS = {
   aidetectAdminMinTextLength: 8,
   aidetectAdminGroupRules: "",
   aidetectAdminAutoSkipInvalid: false,
-  aidetectAdminAutoAction: "approve_only"
+  aidetectAdminAutoAction: "approve_only",
+  aidetectAdminAutoRunning: false
 };
 
 const DEFAULT_STATS = {
@@ -145,7 +146,8 @@ function normalizeSettings(items) {
     Number(settings.aidetectAdminMinTextLength) || DEFAULT_SETTINGS.aidetectAdminMinTextLength
   );
   settings.aidetectAdminGroupRules = String(settings.aidetectAdminGroupRules || "");
-  settings.aidetectAdminAutoSkipInvalid = Boolean(settings.aidetectAdminAutoSkipInvalid);
+  settings.aidetectAdminAutoSkipInvalid = settings.aidetectAdminAutoAction === "approve_only";
+  settings.aidetectAdminAutoRunning = Boolean(settings.aidetectAdminAutoRunning);
 
   return settings;
 }

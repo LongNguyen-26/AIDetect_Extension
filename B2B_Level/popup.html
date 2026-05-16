@@ -153,23 +153,6 @@
       outline-offset: 1px;
     }
 
-    .checkbox-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 9px;
-      color: #374151;
-      font-size: 12px;
-      line-height: 1.35;
-    }
-
-    .checkbox-row input {
-      width: 15px;
-      height: 15px;
-      margin: 0;
-      accent-color: var(--blue);
-    }
-
     .hint {
       margin: 8px 0 0;
       color: var(--muted);
@@ -271,6 +254,28 @@
       background: #f3f4f6;
     }
 
+    .start-button {
+      width: 100%;
+      margin-top: 10px;
+      border-color: #16a34a;
+      background: #16a34a;
+      color: #ffffff;
+      font-weight: 700;
+    }
+
+    .start-button:hover {
+      background: #15803d;
+    }
+
+    .start-button.running {
+      border-color: #dc2626;
+      background: #dc2626;
+    }
+
+    .start-button.running:hover {
+      background: #b91c1c;
+    }
+
     .status {
       color: var(--muted);
       font-size: 12px;
@@ -335,17 +340,14 @@
     </div>
     <textarea id="groupRules" rows="4" placeholder="Ví dụ:&#10;- Không đăng quảng cáo&#10;- Chỉ nội dung liên quan đến lập trình&#10;- Không spam link ngoài"></textarea>
     <select id="autoAction">
-      <option value="approve_only">Chỉ tự duyệt bài hợp lệ</option>
-      <option value="approve_and_delete">Tự duyệt hợp lệ và xóa bài vi phạm</option>
+      <option value="approve_only">Flow 1: Chỉ duyệt bài hợp lệ</option>
+      <option value="approve_and_delete">Flow 2: Duyệt hợp lệ và xóa bài vi phạm</option>
     </select>
-    <label class="checkbox-row">
-      <input type="checkbox" id="autoSkipInvalid">
-      <span>Bỏ qua các bài không hợp lệ (Flow 2)</span>
-    </label>
     <p class="hint">
-      Flow 1: Kiểm duyệt tất cả, duyệt/xóa theo kết quả.<br>
-      Flow 2: Chỉ duyệt bài hợp lệ, giữ bài không hợp lệ trong hàng chờ.
+      Flow 1 mặc định: Chỉ duyệt bài hợp lệ, giữ bài không hợp lệ trong hàng chờ.<br>
+      Flow 2: Duyệt bài hợp lệ và xóa bài vi phạm.
     </p>
+    <button type="button" class="start-button" id="startModeration">Bắt đầu duyệt</button>
   </section>
 
   <section class="legend" aria-label="Mức phân loại AIDetect Admin">

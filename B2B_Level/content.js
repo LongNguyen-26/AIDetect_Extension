@@ -11,7 +11,8 @@
     aidetectAdminMinTextLength: 8,
     aidetectAdminGroupRules: "",
     aidetectAdminAutoSkipInvalid: false,
-    aidetectAdminAutoAction: "approve_only"
+    aidetectAdminAutoAction: "approve_only",
+    aidetectAdminAutoRunning: false
   };
   const FAB_HOST_ID = "aidetect-admin-fab-host";
   const MODE_ICON = { off: "AI", manual: "🔍", auto: "⚡" };
@@ -99,7 +100,7 @@
     setupStorageListener();
     setupViewportScanner();
     setupDomObserver();
-    if (isAutoModeActive()) {
+    if (isAutoModerationRunning()) {
       startAutoMode();
     } else {
       scheduleScan(150);
@@ -134,8 +135,9 @@
       Number(settings.aidetectAdminMinTextLength) || DEFAULT_SETTINGS.aidetectAdminMinTextLength
     );
     settings.aidetectAdminGroupRules = String(settings.aidetectAdminGroupRules || "");
-    settings.aidetectAdminAutoSkipInvalid = Boolean(settings.aidetectAdminAutoSkipInvalid);
     settings.aidetectAdminAutoAction = normalizeAutoAction(settings.aidetectAdminAutoAction);
+    settings.aidetectAdminAutoSkipInvalid = settings.aidetectAdminAutoAction === "approve_only";
+    settings.aidetectAdminAutoRunning = Boolean(settings.aidetectAdminAutoRunning);
 
     return settings;
   }
@@ -158,6 +160,14 @@
 
   function isAutoModeActive() {
     return state.aidetectAdminMode === "auto";
+  }
+
+  function isAutoModerationRunning() {
+    return isAutoModeActive() && state.aidetectAdminAutoRunning === true;
+  }
+
+  function shouldSkipInvalidInAuto() {
+    return state.aidetectAdminAutoAction !== "approve_and_delete";
   }
 
   function fnv1a32(value) {
@@ -449,12 +459,14 @@
   function setModeFromFab(mode) {
     const normalizedMode = normalizeMode(mode);
     state.aidetectAdminMode = normalizedMode;
+    state.aidetectAdminAutoRunning = false;
     updateFabMode(normalizedMode);
     closeFabMenu();
 
     chrome.storage.sync.set({
       aidetectAdminMode: normalizedMode,
-      aidetectAdminEnabled: normalizedMode !== "off"
+      aidetectAdminEnabled: normalizedMode !== "off",
+      aidetectAdminAutoRunning: false
     });
 
     if (!isScanModeActive()) {
@@ -464,7 +476,7 @@
     }
 
     if (isAutoModeActive()) {
-      startAutoMode();
+      stopAutoMode();
       return;
     }
 
@@ -495,6 +507,7 @@
   }
 
   function startAutoMode() {
+    if (!isAutoModerationRunning()) return;
     console.info(`${LOG_PREFIX}: auto mode started`);
     stopManualScanTimer();
     resetAutoDecisionsForCurrentCards();
@@ -530,7 +543,7 @@
   }
 
   async function autoScanCycle() {
-    if (!isAutoModeActive()) return;
+    if (!isAutoModerationRunning()) return;
 
     if (!isLikelyGroupModerationPage()) {
       scheduleAutoScan(2000);
@@ -544,14 +557,14 @@
     const batch = cards.slice(0, AUTO_BATCH_SIZE);
 
     for (const card of batch) {
-      if (!isAutoModeActive()) return;
+      if (!isAutoModerationRunning()) return;
 
       cardDecisions.set(card, "analyzing");
       await analyzeAndDecide(card);
       await sleep(randomBetween(400, 900));
     }
 
-    if (state.aidetectAdminAutoSkipInvalid) {
+    if (shouldSkipInvalidInAuto()) {
       checkAndScrollIfScreenFull();
     }
 
@@ -598,13 +611,13 @@
     const isInvalid = isAiHigh || isRulesViolation;
 
     if (!isInvalid) return "approve";
-    if (state.aidetectAdminAutoSkipInvalid) return "skip";
+    if (shouldSkipInvalidInAuto()) return "skip";
     if (state.aidetectAdminAutoAction === "approve_and_delete") return "delete";
     return "skip";
   }
 
   async function executeDecision(card, verdict) {
-    if (!isAutoModeActive()) return;
+    if (!isAutoModerationRunning()) return;
     if (verdict === "skip") return;
     if (cardDecisions.get(card) === "done") return;
 
@@ -683,7 +696,7 @@
   }
 
   function checkAndScrollIfScreenFull() {
-    if (!state.aidetectAdminAutoSkipInvalid) return;
+    if (!shouldSkipInvalidInAuto()) return;
 
     const visibleCards = findPendingPostCards().filter((card) => {
       const rect = card.getBoundingClientRect();
@@ -730,6 +743,9 @@
 
       if (changes.aidetectAdminMode) {
         state.aidetectAdminMode = normalizeMode(changes.aidetectAdminMode.newValue);
+        if (changes.aidetectAdminAutoRunning) {
+          state.aidetectAdminAutoRunning = Boolean(changes.aidetectAdminAutoRunning.newValue);
+        }
         updateFabMode(state.aidetectAdminMode);
         if (!isScanModeActive()) {
           stopAutoMode();
@@ -737,7 +753,11 @@
           return;
         }
         if (isAutoModeActive()) {
-          startAutoMode();
+          if (isAutoModerationRunning()) {
+            startAutoMode();
+          } else {
+            stopAutoMode();
+          }
         } else {
           stopAutoMode();
           scheduleScan(0);
@@ -772,17 +792,27 @@
         state.aidetectAdminGroupRules = String(changes.aidetectAdminGroupRules.newValue || "");
       }
 
-      if (changes.aidetectAdminAutoSkipInvalid) {
+      if (changes.aidetectAdminAutoSkipInvalid && !changes.aidetectAdminAutoAction) {
         state.aidetectAdminAutoSkipInvalid = Boolean(changes.aidetectAdminAutoSkipInvalid.newValue);
       }
 
       if (changes.aidetectAdminAutoAction) {
         state.aidetectAdminAutoAction = normalizeAutoAction(changes.aidetectAdminAutoAction.newValue);
+        state.aidetectAdminAutoSkipInvalid = shouldSkipInvalidInAuto();
+      }
+
+      if (changes.aidetectAdminAutoRunning && !changes.aidetectAdminMode) {
+        state.aidetectAdminAutoRunning = Boolean(changes.aidetectAdminAutoRunning.newValue);
+        if (isAutoModerationRunning()) {
+          startAutoMode();
+        } else {
+          stopAutoMode();
+        }
       }
 
       if (isManualModeActive()) {
         scheduleScan(0);
-      } else if (isAutoModeActive()) {
+      } else if (isAutoModerationRunning()) {
         scheduleAutoScan(300);
       }
     });
@@ -807,12 +837,14 @@
 
   function setupDomObserver() {
     state.observer = new MutationObserver(() => {
-      if (isAutoModeActive()) {
+      if (isAutoModerationRunning()) {
         scheduleAutoScan(500);
         return;
       }
 
-      scheduleScan(250);
+      if (isManualModeActive()) {
+        scheduleScan(250);
+      }
     });
     state.observer.observe(document.body, { childList: true, subtree: true });
   }
@@ -1008,7 +1040,7 @@
       videoCount: card.querySelectorAll("video").length,
       links,
       groupRules: state.aidetectAdminGroupRules,
-      autoSkipInvalid: state.aidetectAdminAutoSkipInvalid,
+      autoSkipInvalid: shouldSkipInvalidInAuto(),
       autoAction: state.aidetectAdminAutoAction
     };
   }
