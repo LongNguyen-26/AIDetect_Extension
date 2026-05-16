@@ -2,8 +2,8 @@ const VALID_MODES = new Set(["off", "manual", "auto"]);
 const VALID_AUTO_ACTIONS = new Set(["approve_only", "approve_and_delete"]);
 
 const DEFAULT_SETTINGS = {
-  aidetectAdminEnabled: true,
-  aidetectAdminMode: "manual",
+  aidetectAdminEnabled: false,
+  aidetectAdminMode: "off",
   aidetectAdminThreshold: 85,
   aidetectAdminMinTextLength: 8,
   aidetectAdminGroupRules: "",
@@ -17,6 +17,14 @@ const DEFAULT_STATS = {
   highRisk: 0,
   autoApproved: 0,
   autoDeleted: 0
+};
+
+const MOCK_DEFAULT_STATS = {
+  scanned: 12,
+  warned: 4,
+  highRisk: 2,
+  autoApproved: 3,
+  autoDeleted: 1
 };
 
 const USE_MOCK_REVIEW_DATA = true;
@@ -345,8 +353,14 @@ async function updateStats(result) {
 
 async function getTodayStats() {
   const key = getTodayStatsKey();
-  const current = await getStorageLocal({ [key]: DEFAULT_STATS });
-  return normalizeStats(current[key]);
+  const current = await getStorageLocal(null);
+  if (Object.prototype.hasOwnProperty.call(current || {}, key)) {
+    return normalizeStats(current[key]);
+  }
+
+  const stats = USE_MOCK_REVIEW_DATA ? { ...MOCK_DEFAULT_STATS } : { ...DEFAULT_STATS };
+  await setStorageLocal({ [key]: stats });
+  return stats;
 }
 
 async function resetTodayStats() {

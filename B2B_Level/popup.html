@@ -55,51 +55,47 @@
       line-height: 1.35;
     }
 
-    .mode-control {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
+    .mode-group {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+
+    .mode-btn {
       border: 1px solid var(--line);
-      border-radius: 8px;
-      overflow: hidden;
+      border-radius: 6px;
       background: #ffffff;
-    }
-
-    .mode-control label {
-      position: relative;
-      min-width: 0;
-    }
-
-    .mode-control input {
-      position: absolute;
-      opacity: 0;
-    }
-
-    .mode-control span {
-      display: block;
-      min-height: 34px;
-      padding: 9px 6px;
-      border-left: 1px solid var(--line);
+      color: var(--muted);
       cursor: pointer;
-      color: #374151;
+      font: inherit;
+      font-weight: 600;
       font-size: 12px;
       line-height: 1.2;
-      text-align: center;
-      transition: 160ms ease;
+      padding: 6px 8px;
+      white-space: nowrap;
+      transition: 120ms ease;
     }
 
-    .mode-control label:first-child span {
-      border-left: 0;
-    }
-
-    .mode-control input:checked + span {
-      background: var(--blue);
-      color: #ffffff;
+    .mode-btn.active[data-mode="manual"] {
+      border-color: var(--blue);
+      background: #dbeafe;
+      color: var(--blue);
       font-weight: 700;
     }
 
-    .mode-control input:focus-visible + span {
-      outline: 2px solid #93c5fd;
-      outline-offset: -2px;
+    .mode-btn.active[data-mode="auto"] {
+      border-color: #16a34a;
+      background: #dcfce7;
+      color: #15803d;
+      font-weight: 700;
+    }
+
+    .mode-btn.active[data-mode="off"] {
+      border-color: #9ca3af;
+      background: #f3f4f6;
+      color: #6b7280;
+      font-weight: 700;
     }
 
     .section {
@@ -140,13 +136,21 @@
     select {
       min-height: 34px;
       padding: 7px 8px;
+      margin-top: 9px;
     }
 
     textarea {
       min-height: 70px;
       resize: vertical;
       padding: 8px;
-      line-height: 1.35;
+      line-height: 1.45;
+      background: var(--surface);
+    }
+
+    textarea:focus,
+    select:focus {
+      outline: 2px solid var(--blue);
+      outline-offset: 1px;
     }
 
     .checkbox-row {
@@ -171,6 +175,12 @@
       color: var(--muted);
       font-size: 12px;
       line-height: 1.4;
+    }
+
+    .hint-inline {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
     }
 
     .stats {
@@ -272,33 +282,16 @@
   <header class="header">
     <div class="brand">
       <strong>AIDetect Admin</strong>
-      <span id="scannerStatus">Manual scan trên trang duyệt bài nhóm</span>
+      <span id="modeLabel">Chưa kích hoạt</span>
+    </div>
+    <div class="mode-group" role="group" aria-label="Chế độ hoạt động">
+      <button type="button" id="btnOff" class="mode-btn active" data-mode="off">Tắt</button>
+      <button type="button" id="btnManual" class="mode-btn" data-mode="manual">Quét thủ công</button>
+      <button type="button" id="btnAuto" class="mode-btn" data-mode="auto">Tự động</button>
     </div>
   </header>
 
-  <section class="section">
-    <div class="row">
-      <span>Chế độ hoạt động</span>
-      <strong id="modeValue">Manual</strong>
-    </div>
-    <div class="mode-control" role="radiogroup" aria-label="Chọn chế độ AIDetect Admin">
-      <label>
-        <input type="radio" name="aidetectAdminMode" value="off">
-        <span>Tắt</span>
-      </label>
-      <label>
-        <input type="radio" name="aidetectAdminMode" value="manual">
-        <span>Manual</span>
-      </label>
-      <label>
-        <input type="radio" name="aidetectAdminMode" value="auto">
-        <span>Auto</span>
-      </label>
-    </div>
-    <p class="hint" id="modeHint">Manual scan sẽ hiện badge theo ngưỡng khi bạn lướt trang duyệt bài.</p>
-  </section>
-
-  <section class="section">
+  <section class="section" id="sectionThreshold">
     <div class="row">
       <span>Ngưỡng hiện cảnh báo</span>
       <strong id="thresholdValue">85%</strong>
@@ -335,26 +328,24 @@
     </div>
   </section>
 
-  <section class="section">
+  <section class="section" id="sectionRules" hidden>
     <div class="row">
-      <span>Quy tắc riêng của group</span>
+      <span>Quy tắc kiểm duyệt của group</span>
+      <span class="hint-inline" title="AI sẽ dùng quy tắc này khi kiểm duyệt">i</span>
     </div>
-    <textarea id="groupRules" placeholder="Ví dụ: Không duyệt bài tuyển dụng, spam link, nội dung thiếu nguồn..."></textarea>
-    <p class="hint">Rules này được lưu để dùng cho auto moderation ở các phase sau.</p>
-  </section>
-
-  <section class="section">
-    <div class="row">
-      <span>Auto moderation</span>
-    </div>
+    <textarea id="groupRules" rows="4" placeholder="Ví dụ:&#10;- Không đăng quảng cáo&#10;- Chỉ nội dung liên quan đến lập trình&#10;- Không spam link ngoài"></textarea>
     <select id="autoAction">
       <option value="approve_only">Chỉ tự duyệt bài hợp lệ</option>
       <option value="approve_and_delete">Tự duyệt hợp lệ và xóa bài vi phạm</option>
     </select>
     <label class="checkbox-row">
       <input type="checkbox" id="autoSkipInvalid">
-      <span>Bỏ qua bài thiếu dữ liệu thay vì tự thao tác</span>
+      <span>Bỏ qua các bài không hợp lệ (Flow 2)</span>
     </label>
+    <p class="hint">
+      Flow 1: Kiểm duyệt tất cả, duyệt/xóa theo kết quả.<br>
+      Flow 2: Chỉ duyệt bài hợp lệ, giữ bài không hợp lệ trong hàng chờ.
+    </p>
   </section>
 
   <section class="legend" aria-label="Mức phân loại AIDetect Admin">

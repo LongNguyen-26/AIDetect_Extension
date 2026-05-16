@@ -5,14 +5,17 @@
   const VALID_MODES = new Set(["off", "manual", "auto"]);
   const VALID_AUTO_ACTIONS = new Set(["approve_only", "approve_and_delete"]);
   const DEFAULT_SETTINGS = {
-    aidetectAdminEnabled: true,
-    aidetectAdminMode: "manual",
+    aidetectAdminEnabled: false,
+    aidetectAdminMode: "off",
     aidetectAdminThreshold: 85,
     aidetectAdminMinTextLength: 8,
     aidetectAdminGroupRules: "",
     aidetectAdminAutoSkipInvalid: true,
     aidetectAdminAutoAction: "approve_only"
   };
+  const FAB_HOST_ID = "aidetect-admin-fab-host";
+  const MODE_ICON = { off: "AI", manual: "🔍", auto: "⚡" };
+  const MODE_COLOR = { off: "#1877f2", manual: "#1877f2", auto: "#16a34a" };
 
   const UI_TEXT = {
     approve: ["phê duyệt", "phe duyet", "approve"],
@@ -66,20 +69,25 @@
     ...DEFAULT_SETTINGS,
     observer: null,
     scanTimer: null,
-    intersectionObserver: null
+    intersectionObserver: null,
+    fabRoot: null
   };
 
   const scannedCards = new WeakSet();
   const observedCards = new WeakSet();
   const resultCache = new WeakMap();
   const cardIndexes = new WeakMap();
+  const warningStateByCard = new WeakMap();
   let nextCardIndex = 1;
+  let warnedCardCount = 0;
 
   init();
 
   async function init() {
     console.info(`${LOG_PREFIX}: content script loaded`);
     await loadSettings();
+    injectFloatingButton();
+    updateFabMode(state.aidetectAdminMode);
     setupStorageListener();
     setupViewportScanner();
     setupDomObserver();
@@ -132,12 +140,244 @@
     return state.aidetectAdminMode !== "off";
   }
 
+  function injectFloatingButton() {
+    if (!document.body) {
+      window.setTimeout(injectFloatingButton, 100);
+      return;
+    }
+
+    const existingHost = document.getElementById(FAB_HOST_ID);
+    if (existingHost?.shadowRoot) {
+      state.fabRoot = existingHost.shadowRoot;
+      return;
+    }
+    if (existingHost) {
+      existingHost.remove();
+    }
+
+    const host = document.createElement("div");
+    host.id = FAB_HOST_ID;
+    document.body.appendChild(host);
+
+    const root = host.attachShadow({ mode: "open" });
+    state.fabRoot = root;
+    root.innerHTML = buildFabMarkup();
+
+    root.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+
+    root.getElementById("aidetect-fab-toggle")?.addEventListener("click", () => {
+      root.getElementById("aidetect-fab-menu")?.classList.toggle("open");
+    });
+
+    root.getElementById("aidetect-fab-manual")?.addEventListener("click", () => {
+      setModeFromFab("manual");
+    });
+
+    root.getElementById("aidetect-fab-auto")?.addEventListener("click", () => {
+      setModeFromFab("auto");
+    });
+
+    root.getElementById("aidetect-fab-stop")?.addEventListener("click", () => {
+      setModeFromFab("off");
+    });
+
+    document.addEventListener("click", closeFabMenu);
+  }
+
+  function buildFabMarkup() {
+    return `
+      <style>
+        :host {
+          all: initial;
+          position: fixed;
+          right: 24px;
+          bottom: 24px;
+          z-index: 2147483647;
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 8px;
+          color-scheme: light;
+          font-family: "Segoe UI", Arial, sans-serif;
+        }
+
+        button {
+          font: inherit;
+        }
+
+        .menu {
+          display: none;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 6px;
+        }
+
+        .menu.open {
+          display: flex;
+        }
+
+        .item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-height: 34px;
+          border: 1px solid #e5e7eb;
+          border-radius: 20px;
+          background: #ffffff;
+          color: #374151;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 700;
+          line-height: 1.2;
+          padding: 7px 14px 7px 10px;
+          white-space: nowrap;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+          transition: 120ms ease;
+        }
+
+        .item:hover {
+          background: #f3f4f6;
+        }
+
+        .item.manual {
+          color: #1877f2;
+        }
+
+        .item.auto {
+          color: #15803d;
+        }
+
+        .item.stop {
+          color: #dc2626;
+        }
+
+        .item-icon {
+          display: grid;
+          place-items: center;
+          width: 20px;
+          height: 20px;
+          border-radius: 999px;
+          background: transparent;
+          color: currentColor;
+          font-size: 14px;
+          font-weight: 800;
+          line-height: 1;
+        }
+
+        .main-wrap {
+          position: relative;
+        }
+
+        .main {
+          display: grid;
+          place-items: center;
+          width: 52px;
+          height: 52px;
+          border: 0;
+          border-radius: 50%;
+          background: #1877f2;
+          color: #ffffff;
+          cursor: pointer;
+          font-size: 21px;
+          font-weight: 900;
+          line-height: 1;
+          box-shadow: 0 4px 14px rgba(24, 119, 242, 0.45);
+          transition: 120ms ease;
+          user-select: none;
+        }
+
+        .main:hover {
+          filter: brightness(0.94);
+        }
+
+        .badge {
+          position: absolute;
+          top: -4px;
+          right: -4px;
+          display: none;
+          min-width: 18px;
+          border-radius: 999px;
+          background: #dc2626;
+          color: #ffffff;
+          font-size: 10px;
+          font-weight: 900;
+          line-height: 1;
+          padding: 3px 5px;
+          text-align: center;
+        }
+      </style>
+
+      <div class="menu" id="aidetect-fab-menu">
+        <button class="item manual" id="aidetect-fab-manual" type="button">
+          <span class="item-icon" aria-hidden="true">🔍</span>
+          <span>Quét thủ công</span>
+        </button>
+        <button class="item auto" id="aidetect-fab-auto" type="button">
+          <span class="item-icon" aria-hidden="true">⚡</span>
+          <span>Tự động kiểm duyệt</span>
+        </button>
+        <button class="item stop" id="aidetect-fab-stop" type="button">
+          <span class="item-icon" aria-hidden="true">■</span>
+          <span>Dừng</span>
+        </button>
+      </div>
+      <div class="main-wrap">
+        <button class="main" id="aidetect-fab-toggle" type="button" title="AIDetect Admin">AI</button>
+        <span class="badge" id="aidetect-fab-count"></span>
+      </div>
+    `;
+  }
+
+  function setModeFromFab(mode) {
+    const normalizedMode = normalizeMode(mode);
+    state.aidetectAdminMode = normalizedMode;
+    updateFabMode(normalizedMode);
+    closeFabMenu();
+
+    chrome.storage.sync.set({
+      aidetectAdminMode: normalizedMode,
+      aidetectAdminEnabled: normalizedMode !== "off"
+    });
+
+    if (!isScanModeActive()) {
+      removeAllBadges();
+      return;
+    }
+
+    scheduleScan(0);
+  }
+
+  function closeFabMenu() {
+    state.fabRoot?.getElementById("aidetect-fab-menu")?.classList.remove("open");
+  }
+
+  function updateFabMode(mode) {
+    const button = state.fabRoot?.getElementById("aidetect-fab-toggle");
+    if (!button) return;
+
+    const normalizedMode = normalizeMode(mode);
+    button.textContent = MODE_ICON[normalizedMode] || MODE_ICON.off;
+    button.style.background = MODE_COLOR[normalizedMode] || MODE_COLOR.off;
+    button.title = `AIDetect Admin - ${normalizedMode}`;
+  }
+
+  function updateFabBadge(warnCount) {
+    const badge = state.fabRoot?.getElementById("aidetect-fab-count");
+    if (!badge) return;
+
+    badge.style.display = warnCount > 0 ? "block" : "none";
+    badge.textContent = warnCount > 99 ? "99+" : String(warnCount);
+  }
+
   function setupStorageListener() {
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== "sync") return;
 
       if (changes.aidetectAdminMode) {
         state.aidetectAdminMode = normalizeMode(changes.aidetectAdminMode.newValue);
+        updateFabMode(state.aidetectAdminMode);
         if (!isScanModeActive()) {
           removeAllBadges();
           return;
@@ -146,6 +386,7 @@
 
       if (changes.aidetectAdminEnabled && !changes.aidetectAdminMode) {
         state.aidetectAdminMode = changes.aidetectAdminEnabled.newValue ? "manual" : "off";
+        updateFabMode(state.aidetectAdminMode);
         if (!isScanModeActive()) {
           removeAllBadges();
           return;
@@ -477,11 +718,26 @@
 
   function renderOrRemoveBadge(card, result) {
     if (result.score >= state.aidetectAdminThreshold) {
+      setCardWarningState(card, true);
       renderBadge(card, result);
       return;
     }
 
+    setCardWarningState(card, false);
     removeBadge(card);
+  }
+
+  function setCardWarningState(card, isWarning) {
+    const wasWarning = warningStateByCard.get(card) === true;
+
+    if (isWarning && !wasWarning) {
+      warnedCardCount += 1;
+    } else if (!isWarning && wasWarning) {
+      warnedCardCount = Math.max(0, warnedCardCount - 1);
+    }
+
+    warningStateByCard.set(card, isWarning);
+    updateFabBadge(warnedCardCount);
   }
 
   function renderBadge(card, result) {

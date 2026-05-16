@@ -2,8 +2,8 @@ const VALID_MODES = new Set(["off", "manual", "auto"]);
 const VALID_AUTO_ACTIONS = new Set(["approve_only", "approve_and_delete"]);
 
 const DEFAULT_SETTINGS = {
-  aidetectAdminEnabled: true,
-  aidetectAdminMode: "manual",
+  aidetectAdminEnabled: false,
+  aidetectAdminMode: "off",
   aidetectAdminThreshold: 85,
   aidetectAdminMinTextLength: 8,
   aidetectAdminGroupRules: "",
@@ -20,10 +20,10 @@ const DEFAULT_STATS = {
 };
 
 const elements = {
-  modeInputs: Array.from(document.querySelectorAll('input[name="aidetectAdminMode"]')),
-  modeValue: document.getElementById("modeValue"),
-  modeHint: document.getElementById("modeHint"),
-  scannerStatus: document.getElementById("scannerStatus"),
+  modeButtons: Array.from(document.querySelectorAll(".mode-btn")),
+  modeLabel: document.getElementById("modeLabel"),
+  sectionThreshold: document.getElementById("sectionThreshold"),
+  sectionRules: document.getElementById("sectionRules"),
   threshold: document.getElementById("threshold"),
   thresholdValue: document.getElementById("thresholdValue"),
   groupRules: document.getElementById("groupRules"),
@@ -46,17 +46,13 @@ function initPopup() {
   loadSettings((settings) => applySettings(settings));
   refreshStats();
   bindEvents();
+  setupStorageListener();
 }
 
 function bindEvents() {
-  elements.modeInputs.forEach((input) => {
-    input.addEventListener("change", () => {
-      if (!input.checked) return;
-      updateModeUi(input.value);
-      saveSettings({
-        aidetectAdminMode: input.value,
-        aidetectAdminEnabled: input.value !== "off"
-      });
+  elements.modeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setMode(button.dataset.mode);
     });
   });
 
@@ -93,6 +89,29 @@ function bindEvents() {
       renderStats(stats || DEFAULT_STATS);
       flashStatus("Đã đặt lại");
     });
+  });
+}
+
+function setupStorageListener() {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "sync") return;
+
+    if (changes.aidetectAdminMode) {
+      updateModeUi(normalizeMode(changes.aidetectAdminMode.newValue));
+    }
+
+    if (changes.aidetectAdminGroupRules && document.activeElement !== elements.groupRules) {
+      elements.groupRules.value = String(changes.aidetectAdminGroupRules.newValue || "");
+    }
+
+    if (changes.aidetectAdminAutoSkipInvalid) {
+      elements.autoSkipInvalid.checked = Boolean(changes.aidetectAdminAutoSkipInvalid.newValue);
+    }
+
+    if (changes.aidetectAdminAutoAction) {
+      const action = normalizeAutoAction(changes.aidetectAdminAutoAction.newValue);
+      elements.autoAction.value = action;
+    }
   });
 }
 
@@ -169,14 +188,20 @@ function normalizeSettings(items) {
 }
 
 function applySettings(settings) {
-  elements.modeInputs.forEach((input) => {
-    input.checked = input.value === settings.aidetectAdminMode;
-  });
   renderThreshold(settings.aidetectAdminThreshold);
   elements.groupRules.value = settings.aidetectAdminGroupRules;
   elements.autoAction.value = settings.aidetectAdminAutoAction;
   elements.autoSkipInvalid.checked = settings.aidetectAdminAutoSkipInvalid;
   updateModeUi(settings.aidetectAdminMode);
+}
+
+function setMode(mode) {
+  const normalizedMode = normalizeMode(mode);
+  updateModeUi(normalizedMode);
+  saveSettings({
+    aidetectAdminMode: normalizedMode,
+    aidetectAdminEnabled: normalizedMode !== "off"
+  });
 }
 
 function saveSettings(values) {
@@ -186,26 +211,28 @@ function saveSettings(values) {
 function updateModeUi(mode) {
   const copy = {
     off: {
-      label: "Tắt",
-      status: "Đã tắt quét bài chờ duyệt",
-      hint: "AIDetect Admin sẽ gỡ badge hiện có và không quét thêm bài mới."
+      label: "Chưa kích hoạt"
     },
     manual: {
-      label: "Manual",
-      status: "Manual scan trên trang duyệt bài nhóm",
-      hint: "Manual scan sẽ hiện badge theo ngưỡng khi bạn lướt trang duyệt bài."
+      label: "Đang quét thủ công - hãy lướt bài"
     },
     auto: {
-      label: "Auto",
-      status: "Auto moderation đã sẵn sàng cấu hình",
-      hint: "Auto mode dùng rules và action bên dưới; thao tác tự động sẽ được bật trong UC02."
+      label: "Đang tự động kiểm duyệt"
     }
   };
-  const modeCopy = copy[mode] || copy.manual;
+  const normalizedMode = normalizeMode(mode);
+  const modeCopy = copy[normalizedMode] || copy.off;
 
-  elements.modeValue.textContent = modeCopy.label;
-  elements.scannerStatus.textContent = modeCopy.status;
-  elements.modeHint.textContent = modeCopy.hint;
+  elements.modeButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.mode === normalizedMode);
+  });
+  elements.modeLabel.textContent = modeCopy.label;
+  updateSectionVisibility(normalizedMode);
+}
+
+function updateSectionVisibility(mode) {
+  elements.sectionThreshold.hidden = mode === "off";
+  elements.sectionRules.hidden = mode !== "auto";
 }
 
 function renderThreshold(value) {
@@ -239,4 +266,12 @@ function flashStatus(message) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeMode(value) {
+  return VALID_MODES.has(value) ? value : DEFAULT_SETTINGS.aidetectAdminMode;
+}
+
+function normalizeAutoAction(value) {
+  return VALID_AUTO_ACTIONS.has(value) ? value : DEFAULT_SETTINGS.aidetectAdminAutoAction;
 }
