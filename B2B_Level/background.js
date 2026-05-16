@@ -7,7 +7,7 @@ const DEFAULT_SETTINGS = {
   aidetectAdminThreshold: 85,
   aidetectAdminMinTextLength: 8,
   aidetectAdminGroupRules: "",
-  aidetectAdminAutoSkipInvalid: true,
+  aidetectAdminAutoSkipInvalid: false,
   aidetectAdminAutoAction: "approve_only"
 };
 
@@ -97,6 +97,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === "CHECK_GROUP_RULES") {
+    handleGroupRulesCheck(request.data)
+      .then(sendResponse)
+      .catch((error) => {
+        console.error("AIDetect Admin rules check failed:", error);
+        sendResponse({ violation: false, reason: "", score: 0 });
+      });
+    return true;
+  }
+
+  if (request.action === "UPDATE_AUTO_STAT") {
+    updateAutoStatField(request.field).then(sendResponse);
+    return true;
+  }
+
   if (request.action === "RESET_ADMIN_STATS") {
     resetTodayStats().then(sendResponse);
     return true;
@@ -146,6 +161,35 @@ async function handlePendingPostScan(payload) {
   const result = await analyzePendingPost(payload);
   await updateStats(result);
   return result;
+}
+
+async function handleGroupRulesCheck(data) {
+  const text = normalizeText(data?.text || "");
+  const rules = normalizeText(data?.rules || "");
+
+  if (!rules) {
+    return { violation: false, reason: "", score: 0 };
+  }
+
+  if (USE_MOCK_REVIEW_DATA) {
+    const lowerText = removeDiacritics(text.toLowerCase());
+    const lowerRules = removeDiacritics(rules.toLowerCase());
+    const hasExternalLink = /\bhttps?:\/\//i.test(text) || lowerText.includes("www.");
+    const rulesProhibitLinks = lowerRules.includes("link") || lowerRules.includes("spam");
+    const hasAdTerms = ["quang cao", "ban hang", "tuyen dung", "affiliate"].some((phrase) => lowerText.includes(phrase));
+    const rulesProhibitAds = ["quang cao", "ban hang", "tuyen dung", "spam"].some((phrase) => lowerRules.includes(phrase));
+    const violation = (hasExternalLink && rulesProhibitLinks) || (hasAdTerms && rulesProhibitAds);
+
+    return {
+      violation,
+      reason: violation
+        ? "Mock rules: Bài có dấu hiệu link ngoài/quảng cáo trùng với quy tắc group."
+        : "Mock rules: Không phát hiện vi phạm quy tắc.",
+      score: violation ? 82 : 10
+    };
+  }
+
+  return { violation: false, reason: "Rules API chưa được cấu hình.", score: 0 };
 }
 
 async function analyzePendingPost(payload) {
@@ -349,6 +393,19 @@ async function updateStats(result) {
   if (result.autoDeleted || result.action === "deleted") stats.autoDeleted += 1;
 
   await setStorageLocal({ [key]: stats });
+}
+
+async function updateAutoStatField(field) {
+  const key = getTodayStatsKey();
+  const current = await getStorageLocal({ [key]: DEFAULT_STATS });
+  const stats = normalizeStats(current[key]);
+
+  if (field === "autoApproved" || field === "autoDeleted") {
+    stats[field] += 1;
+  }
+
+  await setStorageLocal({ [key]: stats });
+  return stats;
 }
 
 async function getTodayStats() {

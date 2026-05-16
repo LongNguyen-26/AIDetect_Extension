@@ -10,17 +10,19 @@
     aidetectAdminThreshold: 85,
     aidetectAdminMinTextLength: 8,
     aidetectAdminGroupRules: "",
-    aidetectAdminAutoSkipInvalid: true,
+    aidetectAdminAutoSkipInvalid: false,
     aidetectAdminAutoAction: "approve_only"
   };
   const FAB_HOST_ID = "aidetect-admin-fab-host";
   const MODE_ICON = { off: "AI", manual: "🔍", auto: "⚡" };
   const MODE_COLOR = { off: "#1877f2", manual: "#1877f2", auto: "#16a34a" };
   const HASH_CACHE_MAX = 500;
+  const AUTO_BATCH_SIZE = 3;
 
   const UI_TEXT = {
     approve: ["phê duyệt", "phe duyet", "approve"],
     reject: ["từ chối", "tu choi", "decline", "reject"],
+    confirmDelete: ["xóa", "xoa", "delete", "xác nhận", "xac nhan", "confirm", "ok"],
     bulkChrome: [
       "bài viết đang chờ",
       "bai viet dang cho",
@@ -70,6 +72,8 @@
     ...DEFAULT_SETTINGS,
     observer: null,
     scanTimer: null,
+    autoScanTimer: null,
+    autoScrollTimer: null,
     intersectionObserver: null,
     fabRoot: null
   };
@@ -77,8 +81,10 @@
   const scannedCards = new WeakSet();
   const observedCards = new WeakSet();
   const contentHashCache = new Map();
+  const pendingHashRequests = new Map();
   const resultCache = new WeakMap();
   const cardIndexes = new WeakMap();
+  const cardDecisions = new WeakMap();
   const warningStateByCard = new WeakMap();
   let nextCardIndex = 1;
   let warnedCardCount = 0;
@@ -93,8 +99,12 @@
     setupStorageListener();
     setupViewportScanner();
     setupDomObserver();
-    scheduleScan(150);
-    setTimeout(() => scheduleScan(0), 1200);
+    if (isAutoModeActive()) {
+      startAutoMode();
+    } else {
+      scheduleScan(150);
+      setTimeout(() => scheduleScan(0), 1200);
+    }
   }
 
   function loadSettings() {
@@ -142,6 +152,14 @@
     return state.aidetectAdminMode !== "off";
   }
 
+  function isManualModeActive() {
+    return state.aidetectAdminMode === "manual";
+  }
+
+  function isAutoModeActive() {
+    return state.aidetectAdminMode === "auto";
+  }
+
   function fnv1a32(value) {
     let hash = 0x811c9dc5;
     const input = String(value);
@@ -175,6 +193,67 @@
     }
 
     contentHashCache.set(hash, result);
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  function randomBetween(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function scanCardAsync(payload) {
+    const contentHash = payload.contentHash || buildContentHash(payload);
+    payload.contentHash = contentHash;
+
+    if (contentHashCache.has(contentHash)) {
+      return Promise.resolve(contentHashCache.get(contentHash));
+    }
+
+    if (pendingHashRequests.has(contentHash)) {
+      return pendingHashRequests.get(contentHash);
+    }
+
+    const request = new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: "SCAN_PENDING_POST", data: payload }, (response) => {
+        if (chrome.runtime.lastError || !response || typeof response.score !== "number") {
+          resolve(null);
+          return;
+        }
+
+        const result = { ...response, status: "done", contentHash };
+        setContentHashCache(contentHash, result);
+        resolve(result);
+      });
+    }).finally(() => {
+      pendingHashRequests.delete(contentHash);
+    });
+
+    pendingHashRequests.set(contentHash, request);
+    return request;
+  }
+
+  function checkGroupRules(text, rules) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: "CHECK_GROUP_RULES",
+        data: { text, rules }
+      }, (response) => {
+        if (chrome.runtime.lastError || !response) {
+          resolve(null);
+          return;
+        }
+
+        resolve(response);
+      });
+    });
+  }
+
+  function updateAutoStats(field) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: "UPDATE_AUTO_STAT", field }, resolve);
+    });
   }
 
   function injectFloatingButton() {
@@ -379,10 +458,17 @@
     });
 
     if (!isScanModeActive()) {
+      stopAutoMode();
       removeAllBadges();
       return;
     }
 
+    if (isAutoModeActive()) {
+      startAutoMode();
+      return;
+    }
+
+    stopAutoMode();
     scheduleScan(0);
   }
 
@@ -408,6 +494,236 @@
     badge.textContent = warnCount > 99 ? "99+" : String(warnCount);
   }
 
+  function startAutoMode() {
+    console.info(`${LOG_PREFIX}: auto mode started`);
+    stopManualScanTimer();
+    resetAutoDecisionsForCurrentCards();
+    scheduleAutoScan(300);
+  }
+
+  function stopAutoMode() {
+    window.clearTimeout(state.autoScanTimer);
+    window.clearTimeout(state.autoScrollTimer);
+    state.autoScanTimer = null;
+    state.autoScrollTimer = null;
+    removeActionBadges();
+  }
+
+  function stopManualScanTimer() {
+    window.clearTimeout(state.scanTimer);
+    state.scanTimer = null;
+  }
+
+  function resetAutoDecisionsForCurrentCards() {
+    if (!isLikelyGroupModerationPage()) return;
+
+    findPendingPostCards().forEach((card) => {
+      if (cardDecisions.get(card) !== "done") {
+        cardDecisions.set(card, "pending");
+      }
+    });
+  }
+
+  function scheduleAutoScan(delay = 800) {
+    window.clearTimeout(state.autoScanTimer);
+    state.autoScanTimer = window.setTimeout(autoScanCycle, delay);
+  }
+
+  async function autoScanCycle() {
+    if (!isAutoModeActive()) return;
+
+    if (!isLikelyGroupModerationPage()) {
+      scheduleAutoScan(2000);
+      return;
+    }
+
+    const cards = findPendingPostCards().filter((card) => {
+      const decision = cardDecisions.get(card);
+      return !decision || decision === "pending";
+    });
+    const batch = cards.slice(0, AUTO_BATCH_SIZE);
+
+    for (const card of batch) {
+      if (!isAutoModeActive()) return;
+
+      cardDecisions.set(card, "analyzing");
+      await analyzeAndDecide(card);
+      await sleep(randomBetween(400, 900));
+    }
+
+    if (state.aidetectAdminAutoSkipInvalid) {
+      checkAndScrollIfScreenFull();
+    }
+
+    scheduleAutoScan(1500);
+  }
+
+  async function analyzeAndDecide(card) {
+    const payload = buildCardPayload(card);
+    if (!payload.text && payload.mediaCount === 0) {
+      cardDecisions.set(card, "pending");
+      return;
+    }
+
+    const contentHash = buildContentHash(payload);
+    payload.contentHash = contentHash;
+    card.dataset.aidetectAdminContentHash = contentHash;
+    scannedCards.add(card);
+    card.dataset.aidetectAdminScanned = "true";
+    renderLoadingBadge(card);
+
+    const aiResult = await scanCardAsync(payload);
+    if (!aiResult) {
+      cardDecisions.set(card, "pending");
+      removeBadge(card);
+      return;
+    }
+
+    resultCache.set(card, aiResult);
+    const rulesResult = state.aidetectAdminGroupRules
+      ? await checkGroupRules(payload.text, state.aidetectAdminGroupRules)
+      : null;
+    const verdict = computeVerdict(aiResult, rulesResult);
+
+    cardDecisions.set(card, verdict);
+    renderDecisionBadge(card, aiResult, verdict, rulesResult);
+
+    const delay = randomBetween(1200, 2400);
+    window.setTimeout(() => executeDecision(card, verdict), delay);
+  }
+
+  function computeVerdict(aiResult, rulesResult) {
+    const isAiHigh = Number(aiResult?.score || 0) >= state.aidetectAdminThreshold;
+    const isRulesViolation = rulesResult?.violation === true;
+    const isInvalid = isAiHigh || isRulesViolation;
+
+    if (!isInvalid) return "approve";
+    if (state.aidetectAdminAutoSkipInvalid) return "skip";
+    if (state.aidetectAdminAutoAction === "approve_and_delete") return "delete";
+    return "skip";
+  }
+
+  async function executeDecision(card, verdict) {
+    if (!isAutoModeActive()) return;
+    if (verdict === "skip") return;
+    if (cardDecisions.get(card) === "done") return;
+
+    if (verdict === "approve") {
+      const approved = await clickApproveButton(card);
+      if (approved) {
+        await updateAutoStats("autoApproved");
+        markCardDone(card, "approved");
+      } else {
+        cardDecisions.set(card, "pending");
+      }
+      return;
+    }
+
+    if (verdict === "delete") {
+      const deleted = await clickDeleteButton(card);
+      if (deleted) {
+        await updateAutoStats("autoDeleted");
+        markCardDone(card, "deleted");
+      } else {
+        cardDecisions.set(card, "pending");
+      }
+    }
+  }
+
+  function markCardDone(card, action) {
+    cardDecisions.set(card, "done");
+    card.dataset.aidetectAdminAction = action;
+    setCardWarningState(card, false);
+
+    card.style.transition = "opacity 0.4s ease";
+    card.style.opacity = "0.35";
+    window.setTimeout(() => {
+      card.style.opacity = "";
+      card.style.transition = "";
+    }, 800);
+  }
+
+  async function clickApproveButton(card) {
+    const controls = Array.from(card.querySelectorAll('button, [role="button"], a[role="button"]'));
+    const approveButton = controls.find(isApproveControl);
+    if (!approveButton) return false;
+
+    approveButton.click();
+    await sleep(300);
+    return true;
+  }
+
+  async function clickDeleteButton(card) {
+    const controls = Array.from(card.querySelectorAll('button, [role="button"], a[role="button"]'));
+    const deleteButton = controls.find(isRejectControl);
+    if (!deleteButton) return false;
+
+    deleteButton.click();
+    await sleep(600);
+
+    const confirmButton = findConfirmDeleteButton();
+    if (confirmButton) {
+      confirmButton.click();
+      await sleep(300);
+    }
+
+    return true;
+  }
+
+  function findConfirmDeleteButton() {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+
+    for (const dialog of dialogs) {
+      const controls = Array.from(dialog.querySelectorAll('button, [role="button"], a[role="button"]'));
+      const confirmButton = controls.find((control) => hasAnyLabel(control, UI_TEXT.confirmDelete));
+      if (confirmButton) return confirmButton;
+    }
+
+    return null;
+  }
+
+  function checkAndScrollIfScreenFull() {
+    if (!state.aidetectAdminAutoSkipInvalid) return;
+
+    const visibleCards = findPendingPostCards().filter((card) => {
+      const rect = card.getBoundingClientRect();
+      return rect.top >= 0 && rect.top <= window.innerHeight && rect.bottom <= window.innerHeight + 200;
+    });
+
+    if (visibleCards.length === 0) return;
+
+    const allSkipped = visibleCards.every((card) => cardDecisions.get(card) === "skip");
+    if (allSkipped) {
+      console.info(`${LOG_PREFIX}: screen full of skipped posts, scrolling down`);
+      smoothScrollDown();
+    }
+  }
+
+  function smoothScrollDown() {
+    window.clearTimeout(state.autoScrollTimer);
+    const target = window.scrollY + window.innerHeight * 0.7;
+    window.scrollTo({ top: target, behavior: "smooth" });
+    state.autoScrollTimer = window.setTimeout(() => scheduleAutoScan(800), 1200);
+  }
+
+  function removeActionBadges() {
+    document.querySelectorAll('.aidetect-admin-badge-host[data-aidetect-admin-status="decision"]').forEach((host) => {
+      const card = host.closest('[data-aidetect-admin-scanned="true"]') || host.parentElement;
+      if (card instanceof HTMLElement) {
+        const result = resultCache.get(card);
+        setCardWarningState(card, false);
+        if (isManualModeActive() && result) {
+          renderOrRemoveBadge(card, result);
+          return;
+        }
+        card.style.outline = "";
+        card.style.outlineOffset = "";
+      }
+
+      host.remove();
+    });
+  }
+
   function setupStorageListener() {
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== "sync") return;
@@ -416,8 +732,15 @@
         state.aidetectAdminMode = normalizeMode(changes.aidetectAdminMode.newValue);
         updateFabMode(state.aidetectAdminMode);
         if (!isScanModeActive()) {
+          stopAutoMode();
           removeAllBadges();
           return;
+        }
+        if (isAutoModeActive()) {
+          startAutoMode();
+        } else {
+          stopAutoMode();
+          scheduleScan(0);
         }
       }
 
@@ -425,9 +748,12 @@
         state.aidetectAdminMode = changes.aidetectAdminEnabled.newValue ? "manual" : "off";
         updateFabMode(state.aidetectAdminMode);
         if (!isScanModeActive()) {
+          stopAutoMode();
           removeAllBadges();
           return;
         }
+        stopAutoMode();
+        scheduleScan(0);
       }
 
       if (changes.aidetectAdminThreshold) {
@@ -454,8 +780,10 @@
         state.aidetectAdminAutoAction = normalizeAutoAction(changes.aidetectAdminAutoAction.newValue);
       }
 
-      if (isScanModeActive()) {
+      if (isManualModeActive()) {
         scheduleScan(0);
+      } else if (isAutoModeActive()) {
+        scheduleAutoScan(300);
       }
     });
   }
@@ -465,7 +793,7 @@
 
     state.intersectionObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
-        if (!entry.isIntersecting || !isScanModeActive()) return;
+        if (!entry.isIntersecting || !isManualModeActive()) return;
         const card = entry.target;
         state.intersectionObserver.unobserve(card);
         analyzePendingCard(card);
@@ -478,7 +806,14 @@
   }
 
   function setupDomObserver() {
-    state.observer = new MutationObserver(() => scheduleScan(250));
+    state.observer = new MutationObserver(() => {
+      if (isAutoModeActive()) {
+        scheduleAutoScan(500);
+        return;
+      }
+
+      scheduleScan(250);
+    });
     state.observer.observe(document.body, { childList: true, subtree: true });
   }
 
@@ -488,7 +823,7 @@
   }
 
   function scanPendingPosts() {
-    if (!isScanModeActive()) return;
+    if (!isManualModeActive()) return;
     if (!isLikelyGroupModerationPage()) return;
 
     findPendingPostCards().forEach((card) => {
@@ -622,8 +957,8 @@
     return hasSearchOrFilters && !text.includes("vua xong") && !text.includes("just now");
   }
 
-  function analyzePendingCard(card) {
-    if (!isScanModeActive() || scannedCards.has(card)) return;
+  async function analyzePendingCard(card) {
+    if (!isManualModeActive() || scannedCards.has(card)) return;
 
     const cached = resultCache.get(card);
     if (cached) {
@@ -638,31 +973,19 @@
     payload.contentHash = contentHash;
     card.dataset.aidetectAdminContentHash = contentHash;
 
-    if (contentHashCache.has(contentHash)) {
-      const hashCachedResult = contentHashCache.get(contentHash);
-      scannedCards.add(card);
-      card.dataset.aidetectAdminScanned = "true";
-      resultCache.set(card, hashCachedResult);
-      renderOrRemoveBadge(card, hashCachedResult);
-      return;
-    }
-
     scannedCards.add(card);
     card.dataset.aidetectAdminScanned = "true";
     renderLoadingBadge(card);
 
-    chrome.runtime.sendMessage({ action: "SCAN_PENDING_POST", data: payload }, (response) => {
-      if (chrome.runtime.lastError || !response || typeof response.score !== "number") {
-        removeBadge(card);
-        return;
-      }
+    const result = await scanCardAsync(payload);
+    if (!result) {
+      removeBadge(card);
+      return;
+    }
 
-      const result = { ...response, status: "done", contentHash };
-      resultCache.set(card, result);
-      setContentHashCache(contentHash, result);
-      if (!isScanModeActive()) return;
-      renderOrRemoveBadge(card, result);
-    });
+    resultCache.set(card, result);
+    if (!isManualModeActive()) return;
+    renderOrRemoveBadge(card, result);
   }
 
   function buildCardPayload(card) {
@@ -845,6 +1168,122 @@
         <span>AIDetect đang phân tích...</span>
       </div>
     `;
+  }
+
+  function renderDecisionBadge(card, aiResult, verdict, rulesResult) {
+    const config = {
+      approve: {
+        color: "#16a34a",
+        background: "#f0fdf4",
+        border: "#86efac",
+        icon: "✓",
+        label: "Sẽ phê duyệt"
+      },
+      delete: {
+        color: "#dc2626",
+        background: "#fef2f2",
+        border: "#fca5a5",
+        icon: "×",
+        label: "Sẽ xóa bài"
+      },
+      skip: {
+        color: "#a16207",
+        background: "#fffbeb",
+        border: "#fcd34d",
+        icon: "II",
+        label: "Bỏ qua - giữ trong hàng chờ"
+      }
+    };
+    const decision = config[verdict] || config.skip;
+    const score = Math.round(Number(aiResult?.score) || 0);
+    const ruleNote = rulesResult?.violation
+      ? `<small>Vi phạm quy tắc: ${escapeHtml(rulesResult.reason || "Không rõ lý do")}</small>`
+      : "";
+
+    const host = getOrCreateBadgeHost(card);
+    host.dataset.aidetectAdminResult = JSON.stringify(aiResult || {});
+    host.dataset.aidetectAdminStatus = "decision";
+    host.dataset.aidetectAdminVerdict = verdict;
+
+    const root = host.shadowRoot || host.attachShadow({ mode: "open" });
+    root.innerHTML = `
+      <style>
+        :host {
+          all: initial;
+          color-scheme: light;
+          font-family: Arial, "Segoe UI", sans-serif;
+        }
+
+        .wrap {
+          box-sizing: border-box;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin: 8px 16px;
+          border: 1px solid ${decision.border};
+          border-left: 5px solid ${decision.color};
+          border-radius: 8px;
+          background: ${decision.background};
+          color: #1c1e21;
+          font-size: 13px;
+          line-height: 1.35;
+          padding: 9px 12px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.10);
+        }
+
+        .icon {
+          display: grid;
+          place-items: center;
+          width: 24px;
+          height: 24px;
+          border-radius: 999px;
+          background: ${decision.color};
+          color: #ffffff;
+          font-size: 13px;
+          font-weight: 900;
+          line-height: 1;
+          flex: 0 0 auto;
+        }
+
+        .body {
+          min-width: 0;
+          display: grid;
+          gap: 2px;
+        }
+
+        .label {
+          color: ${decision.color};
+          font-weight: 800;
+        }
+
+        small {
+          color: #4b5563;
+          font-size: 12px;
+          overflow-wrap: anywhere;
+        }
+
+        .score {
+          margin-left: auto;
+          color: #6b7280;
+          font-size: 12px;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+      </style>
+
+      <div class="wrap aidetect-action-badge" role="status">
+        <span class="icon" aria-hidden="true">${decision.icon}</span>
+        <span class="body">
+          <span class="label">${decision.label}</span>
+          ${ruleNote}
+        </span>
+        <span class="score">AI: ${score}%</span>
+      </div>
+    `;
+
+    setCardWarningState(card, verdict !== "approve");
+    card.style.outline = `2px solid ${hexToRgba(decision.color, 0.36)}`;
+    card.style.outlineOffset = "3px";
   }
 
   function renderBadge(card, result) {
@@ -1047,6 +1486,7 @@
   function refreshVisibleBadges() {
     document.querySelectorAll('[data-aidetect-admin-scanned="true"]').forEach((card) => {
       if (!(card instanceof HTMLElement)) return;
+      if (isAutoModeActive() && cardDecisions.get(card)) return;
 
       const result = resultCache.get(card);
       if (result) {
@@ -1118,6 +1558,16 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function hexToRgba(hex, alpha) {
+    const value = String(hex || "").replace("#", "");
+    if (value.length !== 6) return `rgba(0, 0, 0, ${alpha})`;
+
+    const red = parseInt(value.slice(0, 2), 16);
+    const green = parseInt(value.slice(2, 4), 16);
+    const blue = parseInt(value.slice(4, 6), 16);
+    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
   }
 
   function clamp(value, min, max) {

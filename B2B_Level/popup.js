@@ -7,7 +7,7 @@ const DEFAULT_SETTINGS = {
   aidetectAdminThreshold: 85,
   aidetectAdminMinTextLength: 8,
   aidetectAdminGroupRules: "",
-  aidetectAdminAutoSkipInvalid: true,
+  aidetectAdminAutoSkipInvalid: false,
   aidetectAdminAutoAction: "approve_only"
 };
 
@@ -94,6 +94,14 @@ function bindEvents() {
 
 function setupStorageListener() {
   chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local") {
+      const statsChange = Object.entries(changes).find(([key]) => key.startsWith("aidetectAdminStats:"));
+      if (statsChange) {
+        renderStats(statsChange[1].newValue || DEFAULT_STATS);
+      }
+      return;
+    }
+
     if (areaName !== "sync") return;
 
     if (changes.aidetectAdminMode) {
