@@ -16,6 +16,7 @@
   const FAB_HOST_ID = "aidetect-admin-fab-host";
   const MODE_ICON = { off: "AI", manual: "🔍", auto: "⚡" };
   const MODE_COLOR = { off: "#1877f2", manual: "#1877f2", auto: "#16a34a" };
+  const HASH_CACHE_MAX = 500;
 
   const UI_TEXT = {
     approve: ["phê duyệt", "phe duyet", "approve"],
@@ -75,6 +76,7 @@
 
   const scannedCards = new WeakSet();
   const observedCards = new WeakSet();
+  const contentHashCache = new Map();
   const resultCache = new WeakMap();
   const cardIndexes = new WeakMap();
   const warningStateByCard = new WeakMap();
@@ -138,6 +140,41 @@
 
   function isScanModeActive() {
     return state.aidetectAdminMode !== "off";
+  }
+
+  function fnv1a32(value) {
+    let hash = 0x811c9dc5;
+    const input = String(value);
+
+    for (let index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function buildContentHash(payload) {
+    const normalized = [
+      normalizeText(payload.text || "").slice(0, 3000),
+      Number(payload.mediaCount || 0),
+      Number(payload.videoCount || 0)
+    ].join("|");
+
+    return fnv1a32(removeDiacritics(normalized.toLowerCase()));
+  }
+
+  function setContentHashCache(hash, result) {
+    if (!hash) return;
+
+    if (contentHashCache.has(hash)) {
+      contentHashCache.delete(hash);
+    } else if (contentHashCache.size >= HASH_CACHE_MAX) {
+      const oldestHash = contentHashCache.keys().next().value;
+      contentHashCache.delete(oldestHash);
+    }
+
+    contentHashCache.set(hash, result);
   }
 
   function injectFloatingButton() {
@@ -597,16 +634,32 @@
     const payload = buildCardPayload(card);
     if (!payload.text && payload.mediaCount === 0) return;
 
+    const contentHash = buildContentHash(payload);
+    payload.contentHash = contentHash;
+    card.dataset.aidetectAdminContentHash = contentHash;
+
+    if (contentHashCache.has(contentHash)) {
+      const hashCachedResult = contentHashCache.get(contentHash);
+      scannedCards.add(card);
+      card.dataset.aidetectAdminScanned = "true";
+      resultCache.set(card, hashCachedResult);
+      renderOrRemoveBadge(card, hashCachedResult);
+      return;
+    }
+
     scannedCards.add(card);
     card.dataset.aidetectAdminScanned = "true";
+    renderLoadingBadge(card);
 
     chrome.runtime.sendMessage({ action: "SCAN_PENDING_POST", data: payload }, (response) => {
       if (chrome.runtime.lastError || !response || typeof response.score !== "number") {
+        removeBadge(card);
         return;
       }
 
-      const result = { ...response, status: "done" };
+      const result = { ...response, status: "done", contentHash };
       resultCache.set(card, result);
+      setContentHashCache(contentHash, result);
       if (!isScanModeActive()) return;
       renderOrRemoveBadge(card, result);
     });
@@ -740,9 +793,64 @@
     updateFabBadge(warnedCardCount);
   }
 
+  function renderLoadingBadge(card) {
+    const host = getOrCreateBadgeHost(card);
+    host.dataset.aidetectAdminResult = "";
+    host.dataset.aidetectAdminStatus = "loading";
+
+    const root = host.shadowRoot || host.attachShadow({ mode: "open" });
+    root.innerHTML = `
+      <style>
+        :host {
+          all: initial;
+          color-scheme: light;
+          font-family: Arial, "Segoe UI", sans-serif;
+        }
+
+        .loading {
+          box-sizing: border-box;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 10px 16px 8px;
+          border: 1px solid #e5e7eb;
+          border-left: 5px solid #9ca3af;
+          border-radius: 8px;
+          background: #f9fafb;
+          color: #6b7280;
+          font-size: 12px;
+          line-height: 1.35;
+          padding: 8px 12px;
+        }
+
+        @keyframes spin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+
+        .spinner {
+          width: 14px;
+          height: 14px;
+          border: 2px solid #e5e7eb;
+          border-top-color: #9ca3af;
+          border-radius: 50%;
+          animation: spin 0.7s linear infinite;
+          flex: 0 0 auto;
+        }
+      </style>
+
+      <div class="loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>AIDetect đang phân tích...</span>
+      </div>
+    `;
+  }
+
   function renderBadge(card, result) {
     const host = getOrCreateBadgeHost(card);
     host.dataset.aidetectAdminResult = JSON.stringify(result);
+    host.dataset.aidetectAdminStatus = "done";
 
     const root = host.shadowRoot || host.attachShadow({ mode: "open" });
     root.innerHTML = buildBadgeMarkup(result);
@@ -937,10 +1045,11 @@
   }
 
   function refreshVisibleBadges() {
-    document.querySelectorAll(".aidetect-admin-badge-host").forEach((host) => {
-      const result = safeParseJson(host.dataset.aidetectAdminResult);
-      const card = host.closest('[data-aidetect-admin-scanned="true"]') || host.parentElement;
-      if (result && card instanceof HTMLElement) {
+    document.querySelectorAll('[data-aidetect-admin-scanned="true"]').forEach((card) => {
+      if (!(card instanceof HTMLElement)) return;
+
+      const result = resultCache.get(card);
+      if (result) {
         renderOrRemoveBadge(card, result);
       }
     });
@@ -950,11 +1059,15 @@
     document.querySelectorAll(".aidetect-admin-badge-host").forEach((host) => {
       const card = host.closest('[data-aidetect-admin-scanned="true"]') || host.parentElement;
       if (card instanceof HTMLElement) {
+        setCardWarningState(card, false);
         card.style.outline = "";
         card.style.outlineOffset = "";
       }
       host.remove();
     });
+
+    warnedCardCount = 0;
+    updateFabBadge(warnedCardCount);
   }
 
   function removeBadge(card) {
@@ -996,14 +1109,6 @@
       .replace(/[\u0300-\u036f]/g, "")
       .replace(/đ/g, "d")
       .replace(/Đ/g, "D");
-  }
-
-  function safeParseJson(value) {
-    try {
-      return value ? JSON.parse(value) : null;
-    } catch (error) {
-      return null;
-    }
   }
 
   function escapeHtml(value) {
