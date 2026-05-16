@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>AIDetect Admin</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --blue: #1877f2;
+      --red: #b91c1c;
+      --amber: #a16207;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --surface: #f8fafc;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 360px;
+      margin: 0;
+      padding: 14px;
+      color: var(--text);
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #ffffff;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand {
+      display: grid;
+      gap: 2px;
+    }
+
+    .brand strong {
+      color: var(--blue);
+      font-size: 18px;
+      letter-spacing: 0;
+      line-height: 1.15;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .mode-control {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .mode-control label {
+      position: relative;
+      min-width: 0;
+    }
+
+    .mode-control input {
+      position: absolute;
+      opacity: 0;
+    }
+
+    .mode-control span {
+      display: block;
+      min-height: 34px;
+      padding: 9px 6px;
+      border-left: 1px solid var(--line);
+      cursor: pointer;
+      color: #374151;
+      font-size: 12px;
+      line-height: 1.2;
+      text-align: center;
+      transition: 160ms ease;
+    }
+
+    .mode-control label:first-child span {
+      border-left: 0;
+    }
+
+    .mode-control input:checked + span {
+      background: var(--blue);
+      color: #ffffff;
+      font-weight: 700;
+    }
+
+    .mode-control input:focus-visible + span {
+      outline: 2px solid #93c5fd;
+      outline-offset: -2px;
+    }
+
+    .section {
+      padding: 14px 0 0;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+
+    .row strong {
+      color: var(--red);
+      font-size: 14px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--blue);
+      cursor: pointer;
+    }
+
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+      background: #ffffff;
+    }
+
+    select {
+      min-height: 34px;
+      padding: 7px 8px;
+    }
+
+    textarea {
+      min-height: 70px;
+      resize: vertical;
+      padding: 8px;
+      line-height: 1.35;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 9px;
+      color: #374151;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .checkbox-row input {
+      width: 15px;
+      height: 15px;
+      margin: 0;
+      accent-color: var(--blue);
+    }
+
+    .hint {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 10px 8px;
+      text-align: center;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1;
+      margin-bottom: 5px;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+    }
+
+    .legend {
+      display: grid;
+      gap: 7px;
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 8px;
+      background: #f9fafb;
+      font-size: 12px;
+      color: #374151;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .pill {
+      min-width: 64px;
+      border-radius: 999px;
+      padding: 4px 8px;
+      text-align: center;
+      font-weight: 700;
+      font-size: 11px;
+    }
+
+    .pill.red {
+      color: var(--red);
+      background: #fee2e2;
+    }
+
+    .pill.amber {
+      color: var(--amber);
+      background: #fef3c7;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #374151;
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      padding: 8px 10px;
+    }
+
+    button:hover {
+      background: #f3f4f6;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="brand">
+      <strong>AIDetect Admin</strong>
+      <span id="scannerStatus">Manual scan trên trang duyệt bài nhóm</span>
+    </div>
+  </header>
+
+  <section class="section">
+    <div class="row">
+      <span>Chế độ hoạt động</span>
+      <strong id="modeValue">Manual</strong>
+    </div>
+    <div class="mode-control" role="radiogroup" aria-label="Chọn chế độ AIDetect Admin">
+      <label>
+        <input type="radio" name="aidetectAdminMode" value="off">
+        <span>Tắt</span>
+      </label>
+      <label>
+        <input type="radio" name="aidetectAdminMode" value="manual">
+        <span>Manual</span>
+      </label>
+      <label>
+        <input type="radio" name="aidetectAdminMode" value="auto">
+        <span>Auto</span>
+      </label>
+    </div>
+    <p class="hint" id="modeHint">Manual scan sẽ hiện badge theo ngưỡng khi bạn lướt trang duyệt bài.</p>
+  </section>
+
+  <section class="section">
+    <div class="row">
+      <span>Ngưỡng hiện cảnh báo</span>
+      <strong id="thresholdValue">85%</strong>
+    </div>
+    <input type="range" id="threshold" min="70" max="95" value="85">
+    <p class="hint">Bài không vượt ngưỡng sẽ không hiển thị badge trên Facebook.</p>
+  </section>
+
+  <section class="section">
+    <div class="row">
+      <span>Thống kê hôm nay</span>
+    </div>
+    <div class="stats">
+      <div class="stat">
+        <strong id="scannedCount">0</strong>
+        <span>Bài đã quét</span>
+      </div>
+      <div class="stat">
+        <strong id="warnedCount">0</strong>
+        <span>Có cảnh báo</span>
+      </div>
+      <div class="stat">
+        <strong id="highRiskCount">0</strong>
+        <span>AI cao</span>
+      </div>
+      <div class="stat">
+        <strong id="autoApprovedCount">0</strong>
+        <span>Auto duyệt</span>
+      </div>
+      <div class="stat">
+        <strong id="autoDeletedCount">0</strong>
+        <span>Auto xóa</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="row">
+      <span>Quy tắc riêng của group</span>
+    </div>
+    <textarea id="groupRules" placeholder="Ví dụ: Không duyệt bài tuyển dụng, spam link, nội dung thiếu nguồn..."></textarea>
+    <p class="hint">Rules này được lưu để dùng cho auto moderation ở các phase sau.</p>
+  </section>
+
+  <section class="section">
+    <div class="row">
+      <span>Auto moderation</span>
+    </div>
+    <select id="autoAction">
+      <option value="approve_only">Chỉ tự duyệt bài hợp lệ</option>
+      <option value="approve_and_delete">Tự duyệt hợp lệ và xóa bài vi phạm</option>
+    </select>
+    <label class="checkbox-row">
+      <input type="checkbox" id="autoSkipInvalid">
+      <span>Bỏ qua bài thiếu dữ liệu thay vì tự thao tác</span>
+    </label>
+  </section>
+
+  <section class="legend" aria-label="Mức phân loại AIDetect Admin">
+    <div class="legend-item">
+      <span>Hiển thị badge cảnh báo</span>
+      <span class="pill red" id="redLegend">≥85%</span>
+    </div>
+    <div class="legend-item">
+      <span>Không hiển thị trên bài</span>
+      <span class="pill amber" id="silentLegend">&lt;85%</span>
+    </div>
+  </section>
+
+  <footer class="actions">
+    <button type="button" id="resetStats">Đặt lại thống kê</button>
+    <span class="status" id="saveStatus">Đã lưu</span>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

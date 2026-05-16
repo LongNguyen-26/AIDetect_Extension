@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "AIDetect Admin - Group Post Review",
+  "version": "1.0.0",
+  "description": "Detects AI-generated content in Facebook group posts waiting for admin approval.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://*.facebook.com/*",
+    "https://api.aidetect.vn/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AIDetect Admin"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.facebook.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
