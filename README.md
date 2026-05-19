@@ -13,13 +13,18 @@ Manifest hien tai:
 - Content script chay tren `*://*.facebook.com/*`.
 - Background service worker xu ly scan, rule check, stats.
 - Permissions: `storage`, `activeTab`.
-- Host permissions: Facebook va `https://api.aidetect.vn/*`.
+- Host permissions: Facebook, `https://api.aidetect.vn/*` va HF Space API `https://longnguyen3426-aidetect-extension.hf.space/*`.
 
 ## Cau truc file
 
 ```text
 AIDetect_Extension/
   README.md
+  hf-space/
+    app.py
+    Dockerfile
+    requirements.txt
+    prompts/
   B2B_Level/
     manifest.json
     content.js
@@ -35,6 +40,7 @@ Vai tro tung file:
 - `B2B_Level/background.js`: service worker nhan message tu content script, cham diem bai viet, check group rules va cap nhat thong ke.
 - `B2B_Level/popup.html`: UI popup cau hinh che do quet, nguong diem, rule group, action auto.
 - `B2B_Level/popup.js`: logic popup, dong bo cau hinh vao `chrome.storage.sync`.
+- `hf-space/`: FastAPI backend de deploy len Hugging Face Space, goi GROQ API qua `/analyze` va `/check-rules`.
 
 ## Che do hoat dong
 
@@ -145,21 +151,21 @@ Badge dung Shadow DOM de giam xung dot CSS voi Facebook.
 
 ## Background analyzer
 
-`background.js` hien dang bat:
+`background.js` hien dang tat mock va goi HF Space API:
 
 ```js
-const USE_MOCK_REVIEW_DATA = true;
+const USE_MOCK_REVIEW_DATA = false;
+const API_BASE = "https://longnguyen3426-aidetect-extension.hf.space";
 ```
 
-Khi mock bat:
+Khi API loi hoac timeout, `background.js` fallback ve heuristic scorer noi bo de extension van tra ket qua.
+
+Khi mock bat lai:
 
 - Mot so card duoc gan ket qua mock theo `cardIndex` hoac text pattern.
 - Rule check cung la mock heuristic.
 
-Khi thay bang API that:
-
-- Sua `analyzePendingPost(payload)` de goi API AIDetect production.
-- Nen giu output shape:
+Output shape extension dang ky vong:
 
 ```js
 {
@@ -261,7 +267,7 @@ git diff --check
 - Khi them cache moi, nen co fallback theo `contentHash`.
 - Khi update badge, can cap nhat ca warning count theo stable key de tranh dem trung.
 - Auto mode co click approve/delete that, nen test bang mock/manual truoc.
-- `USE_MOCK_REVIEW_DATA` dang la `true`; can can nhac tat khi tich hop API that.
+- `USE_MOCK_REVIEW_DATA` dang la `false`; extension se goi HF Space API va fallback ve heuristic khi API loi.
 
 ## Cac ham nen doc truoc khi sua
 
@@ -295,4 +301,3 @@ Gan day da sua bug Facebook re-render va bo sot card o giua:
 - Normalize theo slot thay vi loai bo ancestor qua rong.
 - Them stable state cache de restore badge khi DOM node cu bi thay.
 - Them debug log co the copy tu console.
-

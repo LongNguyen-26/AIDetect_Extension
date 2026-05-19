@@ -28,7 +28,10 @@ const MOCK_DEFAULT_STATS = {
   autoDeleted: 1
 };
 
-const USE_MOCK_REVIEW_DATA = true;
+const USE_MOCK_REVIEW_DATA = false;
+const API_BASE = "https://longnguyen3426-aidetect-extension.hf.space";
+const API_ANALYZE_TIMEOUT_MS = 12000;
+const API_RULES_TIMEOUT_MS = 10000;
 const MOCK_PENDING_POST_RESULTS = [
   {
     id: "mock-first-pending-post-safe",
@@ -191,7 +194,12 @@ async function handleGroupRulesCheck(data) {
     };
   }
 
-  return { violation: false, reason: "Rules API chưa được cấu hình.", score: 0 };
+  try {
+    return await callRulesApi(text, rules);
+  } catch (error) {
+    console.error("AIDetect Admin rules API error:", error);
+    return { violation: false, reason: "", score: 0 };
+  }
 }
 
 async function analyzePendingPost(payload) {
@@ -209,20 +217,110 @@ async function analyzePendingPost(payload) {
     };
   }
 
-  // MVP/demo analyzer. Replace this with the production AIDetect API when available.
-  const textScore = scoreTextHeuristics(text);
-  const mediaScore = Math.min(14, mediaCount * 3 + videoCount * 7);
-  const templateScore = scoreTemplateSignals(text);
-  const stability = stableScoreBoost(text);
-  const score = clamp(Math.round(textScore + mediaScore + templateScore + stability), 4, 98);
-  const signals = buildSignals(text, mediaCount, videoCount, score);
+  try {
+    return await callAnalyzeApi(payload, text, mediaCount, videoCount);
+  } catch (error) {
+    console.error("AIDetect Admin analyze API error:", error);
+    return analyzeWithHeuristics(payload, text, mediaCount, videoCount);
+  }
+}
+
+async function callAnalyzeApi(payload, text, mediaCount, videoCount) {
+  const data = await fetchJsonWithTimeout(`${API_BASE}/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: text.slice(0, 6000),
+      mediaCount,
+      videoCount,
+      contentHash: payload?.contentHash || "",
+      platform: payload?.platform || "facebook_group_admin"
+    })
+  }, API_ANALYZE_TIMEOUT_MS);
+  const score = clamp(Math.round(Number(data?.score) || 0), 0, 100);
+  const signals = normalizeApiSignals(data?.signals, text, mediaCount, videoCount, score);
 
   return {
     score,
-    type: inferContentType(mediaCount, videoCount),
+    type: String(data?.type || inferContentType(mediaCount, videoCount)),
+    reason: String(data?.reason || buildReason(score, signals)).slice(0, 400),
+    signals,
+    summary: String(data?.summary || text.slice(0, 220)).slice(0, 220),
+    model: String(data?.model || ""),
+    latencyMs: Number(data?.latency_ms || 0),
+    source: "api"
+  };
+}
+
+async function callRulesApi(text, rules) {
+  const data = await fetchJsonWithTimeout(`${API_BASE}/check-rules`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: text.slice(0, 6000),
+      rules: rules.slice(0, 2000)
+    })
+  }, API_RULES_TIMEOUT_MS);
+
+  return {
+    violation: Boolean(data?.violation),
+    reason: String(data?.reason || "").slice(0, 300),
+    score: clamp(Math.round(Number(data?.score) || 0), 0, 100)
+  };
+}
+
+async function fetchJsonWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    return await response.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function normalizeApiSignals(signals, text, mediaCount, videoCount, score) {
+  const normalized = Array.isArray(signals)
+    ? signals
+        .map((signal) => ({
+          label: String(signal?.label || "").slice(0, 100),
+          confidence: clamp(Math.round(Number(signal?.confidence) || 0), 0, 100)
+        }))
+        .filter((signal) => signal.label)
+        .slice(0, 4)
+    : [];
+
+  return normalized.length ? normalized : buildSignals(text, mediaCount, videoCount, score);
+}
+
+function analyzeWithHeuristics(payload, text, mediaCount, videoCount) {
+  const normalizedText = normalizeText(text || (typeof payload === "string" ? payload : payload?.text || ""));
+  const normalizedMediaCount = Number.isFinite(mediaCount) ? mediaCount : Number(payload?.mediaCount || 0);
+  const normalizedVideoCount = Number.isFinite(videoCount) ? videoCount : Number(payload?.videoCount || 0);
+  const textScore = scoreTextHeuristics(normalizedText);
+  const mediaScore = Math.min(14, normalizedMediaCount * 3 + normalizedVideoCount * 7);
+  const templateScore = scoreTemplateSignals(normalizedText);
+  const stability = stableScoreBoost(normalizedText);
+  const score = clamp(Math.round(textScore + mediaScore + templateScore + stability), 4, 98);
+  const signals = buildSignals(normalizedText, normalizedMediaCount, normalizedVideoCount, score);
+
+  return {
+    score,
+    type: inferContentType(normalizedMediaCount, normalizedVideoCount),
     reason: buildReason(score, signals),
     signals,
-    summary: text.slice(0, 220)
+    summary: normalizedText.slice(0, 220),
+    fallback: true
   };
 }
 

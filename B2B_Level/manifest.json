@@ -9,7 +9,8 @@
   ],
   "host_permissions": [
     "*://*.facebook.com/*",
-    "https://api.aidetect.vn/*"
+    "https://api.aidetect.vn/*",
+    "https://longnguyen3426-aidetect-extension.hf.space/*"
   ],
   "action": {
     "default_popup": "popup.html",
