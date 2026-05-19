@@ -73,6 +73,8 @@
     ...DEFAULT_SETTINGS,
     observer: null,
     scanTimer: null,
+    manualScanQueue: [],
+    manualScanQueueTimer: null,
     autoScanTimer: null,
     autoScrollTimer: null,
     intersectionObserver: null,
@@ -524,7 +526,10 @@
 
   function stopManualScanTimer() {
     window.clearTimeout(state.scanTimer);
+    window.clearTimeout(state.manualScanQueueTimer);
     state.scanTimer = null;
+    state.manualScanQueueTimer = null;
+    state.manualScanQueue = [];
   }
 
   function resetAutoDecisionsForCurrentCards() {
@@ -552,6 +557,14 @@
 
     const cards = findPendingPostCards().filter((card) => {
       const decision = cardDecisions.get(card);
+      if (decision && decision !== "pending" && decision !== "analyzing") {
+        const current = getCardPayloadAndHash(card);
+        if (current && card.dataset.aidetectAdminContentHash !== current.contentHash) {
+          cardDecisions.set(card, "pending");
+          return true;
+        }
+      }
+
       return !decision || decision === "pending";
     });
     const batch = cards.slice(0, AUTO_BATCH_SIZE);
@@ -860,22 +873,57 @@
 
     findPendingPostCards().forEach((card) => {
       if (scannedCards.has(card)) {
+        const current = getCardPayloadAndHash(card);
+        if (current && card.dataset.aidetectAdminContentHash !== current.contentHash) {
+          enqueueManualScan(card, true);
+          return;
+        }
+
         const cached = resultCache.get(card);
         if (cached) renderOrRemoveBadge(card, cached);
         return;
       }
 
-      if (observedCards.has(card)) return;
-
       observedCards.add(card);
       card.dataset.aidetectAdminObserved = "true";
-
-      if (state.intersectionObserver) {
-        state.intersectionObserver.observe(card);
-      } else {
-        analyzePendingCard(card);
-      }
+      enqueueManualScan(card);
     });
+  }
+
+  function enqueueManualScan(card, force = false) {
+    if (!(card instanceof HTMLElement)) return;
+    if (!force && scannedCards.has(card)) return;
+    if (card.dataset.aidetectAdminQueued === "true") return;
+
+    card.dataset.aidetectAdminQueued = "true";
+    if (force) card.dataset.aidetectAdminForceQueued = "true";
+    state.manualScanQueue.push(card);
+    scheduleManualScanQueue(0);
+  }
+
+  function scheduleManualScanQueue(delay) {
+    window.clearTimeout(state.manualScanQueueTimer);
+    state.manualScanQueueTimer = window.setTimeout(processManualScanQueue, delay);
+  }
+
+  async function processManualScanQueue() {
+    if (!isManualModeActive()) return;
+
+    const batch = state.manualScanQueue.splice(0, 4);
+    for (const card of batch) {
+      if (!isManualModeActive()) return;
+      if (!(card instanceof HTMLElement) || !document.contains(card)) continue;
+
+      delete card.dataset.aidetectAdminQueued;
+      const force = card.dataset.aidetectAdminForceQueued === "true";
+      delete card.dataset.aidetectAdminForceQueued;
+      await analyzePendingCard(card, { force });
+      await sleep(80);
+    }
+
+    if (state.manualScanQueue.length > 0) {
+      scheduleManualScanQueue(220);
+    }
   }
 
   function isLikelyGroupModerationPage() {
@@ -894,7 +942,7 @@
   }
 
   function findPendingPostCards() {
-    const cards = new Set();
+    const candidates = new Set();
     const controls = Array.from(document.querySelectorAll('button, [role="button"], a[role="button"]'));
 
     controls.forEach((control) => {
@@ -902,22 +950,22 @@
 
       const card = findCardFromApproveControl(control);
       if (card && isValidPendingCard(card)) {
-        cards.add(card);
+        candidates.add(card);
       }
     });
 
     document.querySelectorAll('div[role="article"]').forEach((article) => {
       if (isValidPendingCard(article)) {
-        cards.add(article);
+        candidates.add(article);
       }
     });
 
-    return Array.from(cards);
+    return normalizePendingPostCards(Array.from(candidates));
   }
 
   function findCardFromApproveControl(control) {
     let current = control;
-    for (let depth = 0; depth < 10 && current && current !== document.body; depth += 1) {
+    for (let depth = 0; depth < 14 && current && current !== document.body; depth += 1) {
       if (current instanceof HTMLElement && isValidPendingCard(current)) {
         return current;
       }
@@ -926,13 +974,32 @@
     return null;
   }
 
+  function normalizePendingPostCards(candidates) {
+    const uniqueCandidates = Array.from(new Set(candidates))
+      .filter((card) => card instanceof HTMLElement && isValidPendingCard(card))
+      .sort((first, second) => getElementArea(first) - getElementArea(second));
+
+    const selected = [];
+    uniqueCandidates.forEach((candidate) => {
+      const containsSelectedCard = selected.some((card) => candidate !== card && candidate.contains(card));
+      if (containsSelectedCard) return;
+
+      selected.push(candidate);
+    });
+
+    return selected.sort((first, second) => {
+      const firstRect = first.getBoundingClientRect();
+      const secondRect = second.getBoundingClientRect();
+      return firstRect.top - secondRect.top;
+    });
+  }
+
   function isValidPendingCard(element) {
     if (!(element instanceof HTMLElement)) return false;
     if (!isVisible(element)) return false;
 
     const rect = element.getBoundingClientRect();
     if (rect.width < 320 || rect.height < 120) return false;
-    if (rect.top > window.innerHeight + 1400 || rect.bottom < -700) return false;
 
     if (!hasActionPair(element)) return false;
     if (isBulkToolbar(element)) return false;
@@ -942,10 +1009,20 @@
   }
 
   function hasActionPair(element) {
-    const controls = Array.from(element.querySelectorAll('button, [role="button"], a[role="button"]'));
-    const hasApprove = controls.some(isApproveControl);
-    const hasReject = controls.some(isRejectControl);
-    return hasApprove && hasReject;
+    const controls = getVisibleActionControls(element);
+    const approveCount = controls.filter(isApproveControl).length;
+    const rejectCount = controls.filter(isRejectControl).length;
+    return approveCount >= 1 && rejectCount >= 1 && approveCount <= 2 && rejectCount <= 2;
+  }
+
+  function getVisibleActionControls(element) {
+    return Array.from(element.querySelectorAll('button, [role="button"], a[role="button"]'))
+      .filter((control) => control instanceof HTMLElement && isVisible(control));
+  }
+
+  function getElementArea(element) {
+    const rect = element.getBoundingClientRect();
+    return rect.width * rect.height;
   }
 
   function isApproveControl(element) {
@@ -989,21 +1066,30 @@
     return hasSearchOrFilters && !text.includes("vua xong") && !text.includes("just now");
   }
 
-  async function analyzePendingCard(card) {
-    if (!isManualModeActive() || scannedCards.has(card)) return;
+  async function analyzePendingCard(card, options = {}) {
+    if (!isManualModeActive()) return;
+    if (!options.force && scannedCards.has(card)) return;
 
     const cached = resultCache.get(card);
-    if (cached) {
+    if (!options.force && cached) {
       renderOrRemoveBadge(card, cached);
       return;
     }
 
-    const payload = buildCardPayload(card);
-    if (!payload.text && payload.mediaCount === 0) return;
+    const current = getCardPayloadAndHash(card);
+    if (!current) return;
 
-    const contentHash = buildContentHash(payload);
-    payload.contentHash = contentHash;
+    const { payload, contentHash } = current;
     card.dataset.aidetectAdminContentHash = contentHash;
+
+    if (contentHashCache.has(contentHash)) {
+      const cachedByHash = contentHashCache.get(contentHash);
+      scannedCards.add(card);
+      card.dataset.aidetectAdminScanned = "true";
+      resultCache.set(card, cachedByHash);
+      renderOrRemoveBadge(card, cachedByHash);
+      return;
+    }
 
     scannedCards.add(card);
     card.dataset.aidetectAdminScanned = "true";
@@ -1018,6 +1104,15 @@
     resultCache.set(card, result);
     if (!isManualModeActive()) return;
     renderOrRemoveBadge(card, result);
+  }
+
+  function getCardPayloadAndHash(card) {
+    const payload = buildCardPayload(card);
+    if (!payload.text && payload.mediaCount === 0) return null;
+
+    const contentHash = buildContentHash(payload);
+    payload.contentHash = contentHash;
+    return { payload, contentHash };
   }
 
   function buildCardPayload(card) {
