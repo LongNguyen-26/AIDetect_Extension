@@ -1146,6 +1146,8 @@
   }
 
   function findCardFromApproveControl(control) {
+    if (isPendingPageBulkActionControl(control)) return null;
+
     const candidates = [];
     const slot = getPostSlot(control);
     if (slot) candidates.push(slot);
@@ -1335,6 +1337,8 @@
     const rect = element.getBoundingClientRect();
     if (rect.width < 320 || rect.height < 120) return false;
 
+    if (containsGroupAdminSidebarChrome(element)) return false;
+    if (containsPendingPageFilterChrome(element)) return false;
     if (!hasActionPair(element)) return false;
     if (isBulkToolbar(element)) return false;
     if (isActionOnlyContainer(element)) return false;
@@ -1348,6 +1352,69 @@
     const approveCount = controls.filter(isApproveControl).length;
     const rejectCount = controls.filter(isRejectControl).length;
     return approveCount >= 1 && rejectCount >= 1 && approveCount <= 2 && rejectCount <= 2;
+  }
+
+  function isPendingPageBulkActionControl(control) {
+    if (!(control instanceof HTMLElement)) return false;
+    if (getPostSlot(control)) return false;
+    if (control.closest('div[role="article"]')) return false;
+
+    const container = findActionControlCluster(control);
+    if (!container) return false;
+
+    return isBulkToolbar(container) || containsPendingPageFilterChrome(container);
+  }
+
+  function findActionControlCluster(control) {
+    let current = control;
+
+    for (let depth = 0; depth < 8 && current && current !== document.body; depth += 1) {
+      if (current instanceof HTMLElement) {
+        const controls = getVisibleActionControls(current);
+        const approveCount = controls.filter(isApproveControl).length;
+        const rejectCount = controls.filter(isRejectControl).length;
+        if (approveCount >= 1 && rejectCount >= 1) return current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return null;
+  }
+
+  function containsGroupAdminSidebarChrome(element) {
+    const text = getNormalizedElementText(element, 3500);
+    const sidebarHits = [
+      "trang chu cua cong dong",
+      "tong quan",
+      "cong cu quan tri",
+      "ho tro quan tri",
+      "yeu cau lam thanh vien",
+      "yeu cau huy hieu",
+      "cau hoi chon thanh vien",
+      "co the la spam",
+      "nhat ky hoat dong"
+    ].filter((label) => text.includes(label)).length;
+
+    return sidebarHits >= 3;
+  }
+
+  function containsPendingPageFilterChrome(element) {
+    const text = getNormalizedElementText(element, 3000);
+    const filterHits = [
+      "tim kiem",
+      "xoa bo loc",
+      "chon ngay",
+      "tac gia",
+      "loai noi dung",
+      "moi nhat truoc"
+    ].filter((label) => text.includes(label)).length;
+
+    return filterHits >= 2;
+  }
+
+  function getNormalizedElementText(element, maxLength = 3000) {
+    return removeDiacritics(normalizeText(element.innerText || element.textContent || "").toLowerCase()).slice(0, maxLength);
   }
 
   function isActionOnlyContainer(element) {

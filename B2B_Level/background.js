@@ -32,6 +32,9 @@ const USE_MOCK_REVIEW_DATA = false;
 const API_BASE = "https://longnguyen3426-aidetect-extension.hf.space";
 const API_ANALYZE_TIMEOUT_MS = 12000;
 const API_RULES_TIMEOUT_MS = 10000;
+const ANALYSIS_CACHE_KEY = "aidetectAdminAnalysisCache:v1";
+const ANALYSIS_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const ANALYSIS_CACHE_MAX = 700;
 const MOCK_PENDING_POST_RESULTS = [
   {
     id: "mock-first-pending-post-safe",
@@ -68,6 +71,9 @@ const MOCK_PENDING_POST_RESULTS = [
     ]
   }
 ];
+
+const analysisCache = new Map();
+let analysisCacheLoaded = false;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.sync.get(null, (items) => {
@@ -164,7 +170,9 @@ function normalizeStats(stats) {
 
 async function handlePendingPostScan(payload) {
   const result = await analyzePendingPost(payload);
-  await updateStats(result);
+  if (!result.cached) {
+    await updateStats(result);
+  }
   return result;
 }
 
@@ -206,6 +214,7 @@ async function analyzePendingPost(payload) {
   const text = normalizeText(typeof payload === "string" ? payload : payload?.text || "");
   const mediaCount = Number(payload?.mediaCount || 0);
   const videoCount = Number(payload?.videoCount || 0);
+  const contentHash = getPayloadContentHash(payload, text, mediaCount, videoCount);
   const mockResult = getMockPendingPostResult(payload, text);
 
   if (mockResult) {
@@ -217,12 +226,25 @@ async function analyzePendingPost(payload) {
     };
   }
 
+  const cachedResult = await getCachedAnalysisResult(payload, contentHash);
+  if (cachedResult) {
+    return {
+      ...cachedResult,
+      cached: true,
+      contentHash
+    };
+  }
+
+  let result = null;
   try {
-    return await callAnalyzeApi(payload, text, mediaCount, videoCount);
+    result = await callAnalyzeApi(payload, text, mediaCount, videoCount);
   } catch (error) {
     console.error("AIDetect Admin analyze API error:", error);
-    return analyzeWithHeuristics(payload, text, mediaCount, videoCount);
+    result = analyzeWithHeuristics(payload, text, mediaCount, videoCount);
   }
+
+  await setCachedAnalysisResult(payload, contentHash, result);
+  return result;
 }
 
 async function callAnalyzeApi(payload, text, mediaCount, videoCount) {
@@ -301,6 +323,172 @@ function normalizeApiSignals(signals, text, mediaCount, videoCount, score) {
     : [];
 
   return normalized.length ? normalized : buildSignals(text, mediaCount, videoCount, score);
+}
+
+function getPayloadContentHash(payload, text, mediaCount, videoCount) {
+  if (payload?.contentHash) return String(payload.contentHash);
+
+  const normalized = [
+    normalizeText(text || "").slice(0, 3000),
+    Number(mediaCount || 0),
+    Number(videoCount || 0)
+  ].join("|");
+
+  return fnv1a32(removeDiacritics(normalized.toLowerCase()));
+}
+
+async function getCachedAnalysisResult(payload, contentHash) {
+  await ensureAnalysisCacheLoaded();
+
+  const keys = getPayloadAnalysisCacheKeys(payload, contentHash);
+  for (const key of keys) {
+    const entry = analysisCache.get(key);
+    if (!entry?.result) continue;
+
+    if (Date.now() - Number(entry.updatedAt || 0) > ANALYSIS_CACHE_TTL_MS) {
+      analysisCache.delete(key);
+      persistAnalysisCache().catch((error) => console.warn("AIDetect Admin cache cleanup failed:", error));
+      continue;
+    }
+
+    analysisCache.delete(key);
+    analysisCache.set(key, {
+      ...entry,
+      lastHitAt: Date.now()
+    });
+
+    return normalizeCachedAnalysisResult(entry.result);
+  }
+
+  return null;
+}
+
+async function setCachedAnalysisResult(payload, contentHash, result) {
+  if (!contentHash || !result || typeof result.score !== "number") return;
+  await ensureAnalysisCacheLoaded();
+
+  getPayloadAnalysisCacheKeys(payload, contentHash).forEach((key) => {
+    if (analysisCache.has(key)) {
+      analysisCache.delete(key);
+    }
+
+    analysisCache.set(key, {
+      result: normalizeCachedAnalysisResult(result),
+      updatedAt: Date.now()
+    });
+  });
+
+  trimAnalysisCache();
+  await persistAnalysisCache();
+}
+
+function getPayloadAnalysisCacheKeys(payload, contentHash) {
+  const keys = [];
+  if (contentHash) keys.push(`hash:${contentHash}`);
+
+  const postId = extractPayloadStablePostId(payload);
+  if (postId) keys.push(`post:${postId}`);
+
+  return Array.from(new Set(keys));
+}
+
+function extractPayloadStablePostId(payload) {
+  const values = [
+    ...(Array.isArray(payload?.links) ? payload.links : []),
+    payload?.url || ""
+  ].filter(Boolean);
+
+  const patterns = [
+    /\/pending_posts\/(\d+)/i,
+    /[?&]set=gm\.(\d+)/i,
+    /[?&]story_fbid=(\d+)/i,
+    /[?&]fbid=(\d+)/i,
+    /\/posts\/(\d+)/i,
+    /\/permalink\/(\d+)/i
+  ];
+
+  for (const value of values) {
+    for (const pattern of patterns) {
+      const match = String(value).match(pattern);
+      if (match?.[1]) return match[1];
+    }
+  }
+
+  return "";
+}
+
+async function ensureAnalysisCacheLoaded() {
+  if (analysisCacheLoaded) return;
+
+  const current = await getStorageLocal({ [ANALYSIS_CACHE_KEY]: null });
+  const cache = current?.[ANALYSIS_CACHE_KEY];
+  const entries = Array.isArray(cache?.entries) ? cache.entries : [];
+  const now = Date.now();
+
+  entries.forEach((entry) => {
+    const hash = String(entry?.hash || "");
+    const updatedAt = Number(entry?.updatedAt || 0);
+    if (!hash || !entry?.result) return;
+    if (now - updatedAt > ANALYSIS_CACHE_TTL_MS) return;
+
+    analysisCache.set(hash, {
+      result: normalizeCachedAnalysisResult(entry.result),
+      updatedAt
+    });
+  });
+
+  trimAnalysisCache();
+  analysisCacheLoaded = true;
+}
+
+async function persistAnalysisCache() {
+  if (!analysisCacheLoaded) return;
+
+  const entries = Array.from(analysisCache.entries()).map(([hash, entry]) => ({
+    hash,
+    result: normalizeCachedAnalysisResult(entry.result),
+    updatedAt: Number(entry.updatedAt || Date.now())
+  }));
+
+  await setStorageLocal({
+    [ANALYSIS_CACHE_KEY]: {
+      version: 1,
+      savedAt: Date.now(),
+      entries
+    }
+  });
+}
+
+function trimAnalysisCache() {
+  while (analysisCache.size > ANALYSIS_CACHE_MAX) {
+    const oldestHash = analysisCache.keys().next().value;
+    analysisCache.delete(oldestHash);
+  }
+}
+
+function normalizeCachedAnalysisResult(result) {
+  const score = clamp(Math.round(Number(result?.score) || 0), 0, 100);
+  const signals = Array.isArray(result?.signals)
+    ? result.signals
+        .map((signal) => ({
+          label: String(signal?.label || "").slice(0, 100),
+          confidence: clamp(Math.round(Number(signal?.confidence) || 0), 0, 100)
+        }))
+        .filter((signal) => signal.label)
+        .slice(0, 4)
+    : [];
+
+  return {
+    score,
+    type: String(result?.type || "Bài viết đang chờ duyệt"),
+    reason: String(result?.reason || "").slice(0, 400),
+    signals,
+    summary: String(result?.summary || "").slice(0, 220),
+    model: String(result?.model || ""),
+    latencyMs: Number(result?.latencyMs || result?.latency_ms || 0),
+    source: String(result?.source || ""),
+    fallback: Boolean(result?.fallback)
+  };
 }
 
 function analyzeWithHeuristics(payload, text, mediaCount, videoCount) {
@@ -439,6 +627,18 @@ function stableScoreBoost(text) {
     hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
   }
   return Math.abs(hash % 10);
+}
+
+function fnv1a32(value) {
+  let hash = 0x811c9dc5;
+  const input = String(value);
+
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function inferContentType(mediaCount, videoCount) {
