@@ -18,6 +18,8 @@
   const MODE_ICON = { off: "AI", manual: "🔍", auto: "⚡" };
   const MODE_COLOR = { off: "#1877f2", manual: "#1877f2", auto: "#16a34a" };
   const HASH_CACHE_MAX = 500;
+  const CARD_STATE_CACHE_MAX = 700;
+  const CARD_DEBUG_STORAGE_KEY = "aidetectAdminDebugCards";
   const AUTO_BATCH_SIZE = 3;
 
   const UI_TEXT = {
@@ -85,12 +87,15 @@
   const observedCards = new WeakSet();
   const contentHashCache = new Map();
   const pendingHashRequests = new Map();
+  const cardStateCache = new Map();
   const resultCache = new WeakMap();
   const cardIndexes = new WeakMap();
   const cardDecisions = new WeakMap();
   const warningStateByCard = new WeakMap();
+  const warningStateByCardKey = new Map();
   let nextCardIndex = 1;
   let warnedCardCount = 0;
+  let lastNormalizeDebugSignature = "";
 
   init();
 
@@ -205,6 +210,131 @@
     }
 
     contentHashCache.set(hash, result);
+  }
+
+  function getCardStateCache(key) {
+    if (!key || !cardStateCache.has(key)) return null;
+
+    const stateEntry = cardStateCache.get(key);
+    cardStateCache.delete(key);
+    cardStateCache.set(key, stateEntry);
+    return stateEntry;
+  }
+
+  function setCardStateCache(key, statePatch) {
+    if (!key) return null;
+
+    const previous = cardStateCache.get(key) || {};
+    if (cardStateCache.has(key)) {
+      cardStateCache.delete(key);
+    } else if (cardStateCache.size >= CARD_STATE_CACHE_MAX) {
+      const oldestKey = cardStateCache.keys().next().value;
+      cardStateCache.delete(oldestKey);
+    }
+
+    const next = {
+      ...previous,
+      ...statePatch,
+      updatedAt: Date.now()
+    };
+    cardStateCache.set(key, next);
+    return next;
+  }
+
+  function getCardCacheKeys(card, contentHash = "") {
+    const keys = [];
+    const stableKey = getCardStableKey(card, contentHash);
+
+    if (stableKey) keys.push(stableKey);
+    if (contentHash) keys.push(`hash:${contentHash}`);
+
+    return Array.from(new Set(keys));
+  }
+
+  function getCachedCardState(card, contentHash = "") {
+    const keys = getCardCacheKeys(card, contentHash);
+
+    for (const key of keys) {
+      const stateEntry = getCardStateCache(key);
+      if (!stateEntry) continue;
+      if (contentHash && stateEntry.contentHash && stateEntry.contentHash !== contentHash) continue;
+      return stateEntry;
+    }
+
+    return null;
+  }
+
+  function setCachedCardState(card, contentHash, statePatch) {
+    const keys = getCardCacheKeys(card, contentHash);
+    let next = null;
+
+    keys.forEach((key) => {
+      next = setCardStateCache(key, {
+        ...statePatch,
+        contentHash: contentHash || statePatch?.contentHash || ""
+      });
+    });
+
+    return next;
+  }
+
+  function hydrateCardFromStableState(card, current, options = {}) {
+    if (!(card instanceof HTMLElement) || !current?.contentHash) return null;
+
+    let cachedState = getCachedCardState(card, current.contentHash);
+    let contentHashDrift = false;
+
+    if (!cachedState) {
+      const stableKey = getCardStableKey(card, current.contentHash);
+      if (stableKey && !stableKey.startsWith("hash:")) {
+        const stableState = getCardStateCache(stableKey);
+        if (stableState?.result) {
+          cachedState = stableState;
+          contentHashDrift = Boolean(stableState.contentHash && stableState.contentHash !== current.contentHash);
+        }
+      }
+    }
+
+    const result = cachedState?.result || contentHashCache.get(current.contentHash);
+
+    card.dataset.aidetectAdminContentHash = current.contentHash;
+
+    if (result) {
+      scannedCards.add(card);
+      card.dataset.aidetectAdminScanned = "true";
+      resultCache.set(card, result);
+
+      if (!cachedState?.result) {
+        setCachedCardState(card, current.contentHash, { result });
+      } else if (contentHashDrift) {
+        setCachedCardState(card, current.contentHash, {
+          ...cachedState,
+          result,
+          contentHashDrift: true
+        });
+      }
+
+      if (options.renderManualBadge) {
+        renderOrRemoveBadge(card, result);
+      } else if (options.renderAutoDecision && cachedState?.decision && cachedState.decision !== "done") {
+        renderDecisionBadge(card, result, cachedState.decision, cachedState.rulesResult || null);
+      }
+    }
+
+    if (cachedState?.decision) {
+      cardDecisions.set(card, cachedState.decision);
+    }
+
+    if (cachedState) {
+      return {
+        ...cachedState,
+        result: cachedState.result || result || null,
+        contentHash: current.contentHash,
+        contentHashDrift
+      };
+    }
+
+    return result ? { result, contentHash: current.contentHash } : null;
   }
 
   function sleep(ms) {
@@ -536,8 +666,16 @@
     if (!isLikelyGroupModerationPage()) return;
 
     findPendingPostCards().forEach((card) => {
+      const current = getCardPayloadAndHash(card);
+      if (current) {
+        hydrateCardFromStableState(card, current);
+      }
+
       if (cardDecisions.get(card) !== "done") {
         cardDecisions.set(card, "pending");
+        if (current) {
+          setCachedCardState(card, current.contentHash, { decision: "pending" });
+        }
       }
     });
   }
@@ -556,11 +694,22 @@
     }
 
     const cards = findPendingPostCards().filter((card) => {
+      const current = getCardPayloadAndHash(card);
+      if (!current) return false;
+
+      const previousContentHash = card.dataset.aidetectAdminContentHash || "";
+      const stableState = hydrateCardFromStableState(card, current, { renderAutoDecision: true });
+      if (stableState?.contentHashDrift) {
+        cardDecisions.set(card, "pending");
+        setCachedCardState(card, current.contentHash, { decision: "pending" });
+        return true;
+      }
+
       const decision = cardDecisions.get(card);
       if (decision && decision !== "pending" && decision !== "analyzing") {
-        const current = getCardPayloadAndHash(card);
-        if (current && card.dataset.aidetectAdminContentHash !== current.contentHash) {
+        if (previousContentHash && previousContentHash !== current.contentHash) {
           cardDecisions.set(card, "pending");
+          setCachedCardState(card, current.contentHash, { decision: "pending" });
           return true;
         }
       }
@@ -601,6 +750,7 @@
     const aiResult = await scanCardAsync(payload);
     if (!aiResult) {
       cardDecisions.set(card, "pending");
+      setCachedCardState(card, contentHash, { decision: "pending" });
       removeBadge(card);
       return;
     }
@@ -612,6 +762,12 @@
     const verdict = computeVerdict(aiResult, rulesResult);
 
     cardDecisions.set(card, verdict);
+    setCachedCardState(card, contentHash, {
+      result: aiResult,
+      rulesResult,
+      decision: verdict,
+      warning: verdict !== "approve"
+    });
     renderDecisionBadge(card, aiResult, verdict, rulesResult);
 
     const delay = randomBetween(1200, 2400);
@@ -659,6 +815,11 @@
   function markCardDone(card, action) {
     cardDecisions.set(card, "done");
     card.dataset.aidetectAdminAction = action;
+    setCachedCardState(card, card.dataset.aidetectAdminContentHash || "", {
+      action,
+      decision: "done",
+      warning: false
+    });
     setCardWarningState(card, false);
 
     card.style.transition = "opacity 0.4s ease";
@@ -872,9 +1033,20 @@
     if (!isLikelyGroupModerationPage()) return;
 
     findPendingPostCards().forEach((card) => {
+      const current = getCardPayloadAndHash(card);
+      if (!current) return;
+
+      const previousContentHash = card.dataset.aidetectAdminContentHash || "";
+      const stableState = hydrateCardFromStableState(card, current, { renderManualBadge: true });
+      if (stableState?.result && stableState.contentHash === current.contentHash) {
+        if (stableState.contentHashDrift) {
+          enqueueManualScan(card, true);
+        }
+        return;
+      }
+
       if (scannedCards.has(card)) {
-        const current = getCardPayloadAndHash(card);
-        if (current && card.dataset.aidetectAdminContentHash !== current.contentHash) {
+        if (previousContentHash && previousContentHash !== current.contentHash) {
           enqueueManualScan(card, true);
           return;
         }
@@ -946,12 +1118,22 @@
     const controls = Array.from(document.querySelectorAll('button, [role="button"], a[role="button"]'));
 
     controls.forEach((control) => {
-      if (!isApproveControl(control)) return;
+      if (!isApproveControl(control) && !isRejectControl(control)) return;
 
       const card = findCardFromApproveControl(control);
-      if (card && isValidPendingCard(card)) {
-        candidates.add(card);
-      }
+      if (card) candidates.add(card);
+    });
+
+    document.querySelectorAll([
+      "[aria-posinset]",
+      'input[name^="pending-post-checkbox-"]',
+      'a[href*="/pending_posts/"]',
+      'a[href*="pending_posts"]',
+      'a[href*="set=gm."]',
+      'a[href*="story_fbid="]'
+    ].join(",")).forEach((marker) => {
+      const card = findCardFromPostMarker(marker);
+      if (card) candidates.add(card);
     });
 
     document.querySelectorAll('div[role="article"]').forEach((article) => {
@@ -964,8 +1146,26 @@
   }
 
   function findCardFromApproveControl(control) {
-    let current = control;
-    for (let depth = 0; depth < 14 && current && current !== document.body; depth += 1) {
+    const candidates = [];
+    const slot = getPostSlot(control);
+    if (slot) candidates.push(slot);
+
+    const ancestor = findSmallestValidAncestor(control, 18);
+    if (ancestor) candidates.push(ancestor);
+
+    return pickBestPostCandidate(candidates.filter((candidate) => candidate instanceof HTMLElement && isValidPendingCard(candidate))) || null;
+  }
+
+  function findCardFromPostMarker(marker) {
+    const slot = getPostSlot(marker);
+    if (slot && isValidPendingCard(slot)) return slot;
+
+    return findSmallestValidAncestor(marker, 18);
+  }
+
+  function findSmallestValidAncestor(element, maxDepth) {
+    let current = element;
+    for (let depth = 0; depth < maxDepth && current && current !== document.body; depth += 1) {
       if (current instanceof HTMLElement && isValidPendingCard(current)) {
         return current;
       }
@@ -979,18 +1179,152 @@
       .filter((card) => card instanceof HTMLElement && isValidPendingCard(card))
       .sort((first, second) => getElementArea(first) - getElementArea(second));
 
-    const selected = [];
-    uniqueCandidates.forEach((candidate) => {
-      const containsSelectedCard = selected.some((card) => candidate !== card && candidate.contains(card));
-      if (containsSelectedCard) return;
+    const slotGroups = new Map();
+    const standaloneCandidates = [];
 
-      selected.push(candidate);
+    uniqueCandidates.forEach((candidate) => {
+      const slot = getPostSlot(candidate);
+      if (!slot) {
+        standaloneCandidates.push(candidate);
+        return;
+      }
+
+      const group = slotGroups.get(slot) || [];
+      group.push(candidate);
+      slotGroups.set(slot, group);
     });
 
-    return selected.sort((first, second) => {
+    const selected = Array.from(slotGroups.values())
+      .map((group) => pickBestPostCandidate(group))
+      .filter(Boolean)
+      .concat(standaloneCandidates)
+      .sort((first, second) => {
+        const firstRect = first.getBoundingClientRect();
+        const secondRect = second.getBoundingClientRect();
+        return firstRect.top - secondRect.top || getElementArea(first) - getElementArea(second);
+      });
+
+    const deduped = [];
+    selected.forEach((candidate) => {
+      const candidateKey = getCardStableKey(candidate, candidate.dataset.aidetectAdminContentHash || "");
+      const duplicateIndex = deduped.findIndex((card) => {
+        const cardKey = getCardStableKey(card, card.dataset.aidetectAdminContentHash || "");
+        return candidateKey && cardKey && candidateKey === cardKey;
+      });
+
+      if (duplicateIndex >= 0) {
+        const existing = deduped[duplicateIndex];
+        if (getPostCandidateScore(candidate) > getPostCandidateScore(existing)) {
+          deduped[duplicateIndex] = candidate;
+        }
+        return;
+      }
+
+      const overlapsExisting = deduped.some((card) => {
+        if (card === candidate) return true;
+        if (getPostSlot(card) && getPostSlot(card) === getPostSlot(candidate)) return true;
+        return card.contains(candidate) || candidate.contains(card);
+      });
+      if (overlapsExisting) return;
+
+      deduped.push(candidate);
+    });
+
+    const normalized = deduped.sort((first, second) => {
       const firstRect = first.getBoundingClientRect();
       const secondRect = second.getBoundingClientRect();
       return firstRect.top - secondRect.top;
+    });
+
+    logPendingCardNormalization(candidates, uniqueCandidates, normalized);
+    return normalized;
+  }
+
+  function pickBestPostCandidate(candidates) {
+    return candidates
+      .filter((candidate) => candidate instanceof HTMLElement && isValidPendingCard(candidate))
+      .sort((first, second) => {
+        const scoreDiff = getPostCandidateScore(second) - getPostCandidateScore(first);
+        if (scoreDiff !== 0) return scoreDiff;
+        return getElementArea(first) - getElementArea(second);
+      })[0] || null;
+  }
+
+  function getPostCandidateScore(card) {
+    let score = 0;
+    if (card.querySelector('input[name^="pending-post-checkbox-"]')) score += 80;
+    if (card.querySelector('[data-ad-rendering-role="story_message"], [data-ad-comet-preview="message"], [data-ad-preview="message"]')) score += 70;
+    if (card.querySelector('a[href*="/pending_posts/"], a[href*="pending_posts"], a[href*="set=gm."], a[href*="story_fbid="]')) score += 45;
+    if (card.querySelector("img, video, canvas")) score += 20;
+
+    const controls = getVisibleActionControls(card);
+    const approveCount = controls.filter(isApproveControl).length;
+    const rejectCount = controls.filter(isRejectControl).length;
+    if (approveCount === 1 && rejectCount === 1) score += 20;
+    if (approveCount > 2 || rejectCount > 2) score -= 140;
+
+    const rect = card.getBoundingClientRect();
+    if (rect.height > window.innerHeight * 2.2) score -= 30;
+    return score;
+  }
+
+  function logPendingCardNormalization(rawCandidates, validCandidates, selectedCards) {
+    if (!isCardDebugEnabled()) return;
+
+    const signature = [
+      rawCandidates.length,
+      validCandidates.length,
+      selectedCards.map((card) => {
+        const rect = card.getBoundingClientRect();
+        return `${getPostSlot(card)?.getAttribute("aria-posinset") || "-"}:${Math.round(rect.top)}:${getCardStableKey(card, card.dataset.aidetectAdminContentHash || "")}`;
+      }).join("|")
+    ].join(":");
+
+    if (signature === lastNormalizeDebugSignature) return;
+    lastNormalizeDebugSignature = signature;
+
+    console.groupCollapsed(`${LOG_PREFIX}: normalizePendingPostCards raw=${rawCandidates.length} valid=${validCandidates.length} selected=${selectedCards.length}`);
+    console.table([
+      ...buildNormalizeDebugRows("candidate", validCandidates),
+      ...buildNormalizeDebugRows("selected", selectedCards)
+    ]);
+    console.groupEnd();
+  }
+
+  function isCardDebugEnabled() {
+    try {
+      return window.__AIDetectAdminDebugCards === true || window.localStorage?.getItem(CARD_DEBUG_STORAGE_KEY) === "1";
+    } catch (error) {
+      return window.__AIDetectAdminDebugCards === true;
+    }
+  }
+
+  function buildNormalizeDebugRows(kind, cards) {
+    return cards.map((card, index) => {
+      const rect = card.getBoundingClientRect();
+      const text = extractPendingPostText(card);
+      const mediaCount = countMedia(card);
+      const contentHash = text || mediaCount ? buildContentHash({
+        text,
+        mediaCount,
+        videoCount: card.querySelectorAll("video").length
+      }) : "";
+      const controls = getVisibleActionControls(card);
+
+      return {
+        kind,
+        index,
+        posinset: getPostSlot(card)?.getAttribute("aria-posinset") || "",
+        top: Math.round(rect.top),
+        height: Math.round(rect.height),
+        width: Math.round(rect.width),
+        score: getPostCandidateScore(card),
+        approve: controls.filter(isApproveControl).length,
+        reject: controls.filter(isRejectControl).length,
+        key: getCardStableKey(card, contentHash),
+        hash: contentHash,
+        text: text.slice(0, 120)
+      };
     });
   }
 
@@ -1003,8 +1337,9 @@
 
     if (!hasActionPair(element)) return false;
     if (isBulkToolbar(element)) return false;
+    if (isActionOnlyContainer(element)) return false;
 
-    const payload = buildCardPayload(element);
+    const payload = buildCardPayload(element, { assignCardIndex: false });
     return payload.text.length >= state.aidetectAdminMinTextLength || payload.mediaCount > 0;
   }
 
@@ -1013,6 +1348,29 @@
     const approveCount = controls.filter(isApproveControl).length;
     const rejectCount = controls.filter(isRejectControl).length;
     return approveCount >= 1 && rejectCount >= 1 && approveCount <= 2 && rejectCount <= 2;
+  }
+
+  function isActionOnlyContainer(element) {
+    if (element.querySelector([
+      'input[name^="pending-post-checkbox-"]',
+      '[data-ad-rendering-role="story_message"]',
+      '[data-ad-comet-preview="message"]',
+      '[data-ad-preview="message"]',
+      'a[href*="/pending_posts/"]',
+      'a[href*="pending_posts"]',
+      'a[href*="set=gm."]',
+      'a[href*="story_fbid="]',
+      "img",
+      "video",
+      "canvas"
+    ].join(","))) {
+      return false;
+    }
+
+    const text = getAccessibleText(element);
+    const hasApproveText = UI_TEXT.approve.some((label) => text.includes(removeDiacritics(label)));
+    const hasRejectText = UI_TEXT.reject.some((label) => text.includes(removeDiacritics(label)));
+    return hasApproveText && hasRejectText;
   }
 
   function getVisibleActionControls(element) {
@@ -1072,6 +1430,10 @@
 
     const cached = resultCache.get(card);
     if (!options.force && cached) {
+      const current = getCardPayloadAndHash(card);
+      if (current) {
+        setCachedCardState(card, current.contentHash, { result: cached });
+      }
       renderOrRemoveBadge(card, cached);
       return;
     }
@@ -1087,6 +1449,7 @@
       scannedCards.add(card);
       card.dataset.aidetectAdminScanned = "true";
       resultCache.set(card, cachedByHash);
+      setCachedCardState(card, contentHash, { result: cachedByHash });
       renderOrRemoveBadge(card, cachedByHash);
       return;
     }
@@ -1097,11 +1460,13 @@
 
     const result = await scanCardAsync(payload);
     if (!result) {
+      setCachedCardState(card, contentHash, { result: null });
       removeBadge(card);
       return;
     }
 
     resultCache.set(card, result);
+    setCachedCardState(card, contentHash, { result, warning: result.score >= state.aidetectAdminThreshold });
     if (!isManualModeActive()) return;
     renderOrRemoveBadge(card, result);
   }
@@ -1115,19 +1480,64 @@
     return { payload, contentHash };
   }
 
-  function buildCardPayload(card) {
+  function getCardStableKey(card, contentHash = "") {
+    if (!(card instanceof HTMLElement)) {
+      return contentHash ? `hash:${contentHash}` : "";
+    }
+
+    const checkbox = card.querySelector('input[name^="pending-post-checkbox-"]');
+    const checkboxName = checkbox?.getAttribute("name");
+    if (checkboxName) return `checkbox:${checkboxName}`;
+
+    const postId = extractStablePostIdFromLinks(card);
+    if (postId) return `post:${postId}`;
+
+    return contentHash ? `hash:${contentHash}` : "";
+  }
+
+  function extractStablePostIdFromLinks(card) {
+    const hrefs = Array.from(card.querySelectorAll("a[href]"))
+      .map((link) => link.href || link.getAttribute("href") || "")
+      .filter(Boolean);
+
+    const patterns = [
+      /\/pending_posts\/(\d+)/i,
+      /[?&]set=gm\.(\d+)/i,
+      /[?&]story_fbid=(\d+)/i,
+      /[?&]fbid=(\d+)/i,
+      /\/posts\/(\d+)/i,
+      /\/permalink\/(\d+)/i
+    ];
+
+    for (const href of hrefs) {
+      for (const pattern of patterns) {
+        const match = href.match(pattern);
+        if (match?.[1]) return match[1];
+      }
+    }
+
+    return "";
+  }
+
+  function getPostSlot(element) {
+    const slot = element?.closest?.("[aria-posinset]");
+    return slot instanceof HTMLElement ? slot : null;
+  }
+
+  function buildCardPayload(card, options = {}) {
     const text = extractPendingPostText(card);
     const links = Array.from(card.querySelectorAll("a[href]"))
       .map((link) => link.href)
       .filter(Boolean)
-      .filter((href) => !href.includes("/groups/") || href.includes("/posts/") || href.includes("story_fbid="))
+      .filter((href) => !href.includes("/groups/") || href.includes("/posts/") || href.includes("pending_posts") || href.includes("story_fbid=") || href.includes("set=gm."))
       .slice(0, 10);
+    const assignCardIndex = options.assignCardIndex !== false;
 
     return {
       platform: "facebook_group_admin",
       pageType: "pending_post_review",
       mode: state.aidetectAdminMode,
-      cardIndex: getCardIndex(card),
+      cardIndex: assignCardIndex ? getCardIndex(card) : Number(card.dataset.aidetectAdminCardIndex || 0),
       url: location.href,
       text,
       mediaCount: countMedia(card),
@@ -1142,10 +1552,16 @@
 
   function getCardIndex(card) {
     if (!cardIndexes.has(card)) {
-      const index = nextCardIndex;
-      nextCardIndex += 1;
+      const stableKey = getCardStableKey(card, card.dataset.aidetectAdminContentHash || "");
+      const cachedState = stableKey ? getCardStateCache(stableKey) : null;
+      const index = Number(cachedState?.cardIndex || 0) || nextCardIndex;
+      if (!cachedState?.cardIndex) nextCardIndex += 1;
+
       cardIndexes.set(card, index);
       card.dataset.aidetectAdminCardIndex = String(index);
+      if (stableKey) {
+        setCardStateCache(stableKey, { ...(cachedState || {}), cardIndex: index });
+      }
     }
 
     return cardIndexes.get(card);
@@ -1231,7 +1647,11 @@
   }
 
   function setCardWarningState(card, isWarning) {
-    const wasWarning = warningStateByCard.get(card) === true;
+    const contentHash = card?.dataset?.aidetectAdminContentHash || "";
+    const cardKey = getCardStableKey(card, contentHash);
+    const wasWarning = cardKey
+      ? warningStateByCardKey.get(cardKey) === true
+      : warningStateByCard.get(card) === true;
 
     if (isWarning && !wasWarning) {
       warnedCardCount += 1;
@@ -1239,7 +1659,13 @@
       warnedCardCount = Math.max(0, warnedCardCount - 1);
     }
 
-    warningStateByCard.set(card, isWarning);
+    if (cardKey) {
+      warningStateByCardKey.set(cardKey, isWarning);
+      setCachedCardState(card, contentHash, { warning: isWarning });
+    } else {
+      warningStateByCard.set(card, isWarning);
+    }
+
     updateFabBadge(warnedCardCount);
   }
 
@@ -1634,12 +2060,14 @@
     });
 
     warnedCardCount = 0;
+    warningStateByCardKey.clear();
     updateFabBadge(warnedCardCount);
   }
 
   function removeBadge(card) {
     const host = card.querySelector(".aidetect-admin-badge-host");
     if (host) host.remove();
+    setCardWarningState(card, false);
     card.style.outline = "";
     card.style.outlineOffset = "";
   }
