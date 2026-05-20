@@ -166,6 +166,64 @@
       line-height: 1;
     }
 
+    .license-panel {
+      display: grid;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 10px;
+    }
+
+    .license-panel .row {
+      margin-bottom: 0;
+    }
+
+    .quota-bar {
+      overflow: hidden;
+      height: 7px;
+      border-radius: 999px;
+      background: #e5e7eb;
+    }
+
+    .quota-fill {
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: #1877f2;
+      transition: width 160ms ease;
+    }
+
+    .quota-hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .mini-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .mini-actions button {
+      flex: 1 1 auto;
+      padding: 7px 8px;
+      font-size: 11px;
+    }
+
+    .mini-actions .primary-link {
+      border-color: var(--blue);
+      background: var(--blue);
+      color: #ffffff;
+      font-weight: 700;
+    }
+
+    .mini-actions .primary-link:hover {
+      background: #0f5fca;
+    }
+
     .stats {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -295,6 +353,28 @@
       <button type="button" id="btnAuto" class="mode-btn" data-mode="auto">Tự động</button>
     </div>
   </header>
+
+  <section class="section">
+    <div class="license-panel" aria-live="polite">
+      <div class="row">
+        <span>License / plan</span>
+        <strong id="quotaPlan">Free</strong>
+      </div>
+      <div class="row">
+        <span>Auto quota</span>
+        <strong id="quotaText">0 / 0</strong>
+      </div>
+      <div class="quota-bar" aria-hidden="true">
+        <div class="quota-fill" id="quotaFill"></div>
+      </div>
+      <p class="quota-hint" id="quotaHint">Manual scan is free. Add a License Key to enable auto moderation.</p>
+      <div class="mini-actions">
+        <button type="button" id="openOptions">License</button>
+        <button type="button" id="refreshQuota">Refresh</button>
+        <button type="button" id="openBilling" class="primary-link">Upgrade</button>
+      </div>
+    </div>
+  </section>
 
   <section class="section" id="sectionThreshold">
     <div class="row">

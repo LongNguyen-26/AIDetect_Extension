@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>AIDetect License</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --blue: #1877f2;
+      --green: #15803d;
+      --red: #b91c1c;
+      --text: #111827;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --surface: #f8fafc;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: var(--surface);
+    }
+
+    main {
+      width: min(720px, calc(100vw - 32px));
+      margin: 40px auto;
+      display: grid;
+      gap: 16px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 20px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      letter-spacing: 0;
+      line-height: 1.2;
+    }
+
+    h1 {
+      color: var(--blue);
+      font-size: 24px;
+    }
+
+    h2 {
+      font-size: 16px;
+      margin-bottom: 10px;
+    }
+
+    p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    label {
+      display: grid;
+      gap: 8px;
+      margin-top: 16px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    input {
+      flex: 1 1 auto;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px 12px;
+      font: inherit;
+      font-family: "Consolas", "SFMono-Regular", monospace;
+    }
+
+    input:focus {
+      outline: 2px solid var(--blue);
+      outline-offset: 1px;
+    }
+
+    button,
+    a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #374151;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 9px 12px;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    button:hover,
+    a.button:hover {
+      background: #f3f4f6;
+    }
+
+    .primary {
+      border-color: var(--blue);
+      background: var(--blue);
+      color: #ffffff;
+    }
+
+    .primary:hover {
+      background: #0f5fca;
+    }
+
+    .danger {
+      border-color: #fecaca;
+      color: var(--red);
+    }
+
+    .actions,
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .status {
+      min-height: 22px;
+      margin-top: 12px;
+      font-weight: 700;
+    }
+
+    .status.ok {
+      color: var(--green);
+    }
+
+    .status.error {
+      color: var(--red);
+    }
+
+    .quota {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .quota-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 14px;
+    }
+
+    .quota-row strong {
+      color: var(--text);
+    }
+
+    .bar {
+      overflow: hidden;
+      height: 8px;
+      border-radius: 999px;
+      background: #e5e7eb;
+    }
+
+    .fill {
+      width: 0;
+      height: 100%;
+      background: var(--blue);
+      transition: width 160ms ease;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>AIDetect License</h1>
+      <p>Manual scan is free. Auto moderation requires a valid License Key and uses monthly quota.</p>
+
+      <label for="licenseKey">
+        License Key
+        <div class="input-row">
+          <input id="licenseKey" type="password" autocomplete="off" spellcheck="false" placeholder="aidetect_live_...">
+          <button type="button" id="toggleKey">Show</button>
+        </div>
+      </label>
+
+      <div class="actions">
+        <button type="button" class="primary" id="saveKey">Save and check</button>
+        <button type="button" class="danger" id="removeKey">Remove key</button>
+      </div>
+
+      <p id="status" class="status"></p>
+    </section>
+
+    <section class="card">
+      <h2>Quota</h2>
+      <div class="quota">
+        <div class="quota-row">
+          <span>Plan</span>
+          <strong id="quotaPlan">Free</strong>
+        </div>
+        <div class="quota-row">
+          <span>Auto moderation</span>
+          <strong id="quotaUsage">0 / 0</strong>
+        </div>
+        <div class="bar" aria-hidden="true">
+          <div class="fill" id="quotaFill"></div>
+        </div>
+        <p id="quotaHint">Paste a License Key to check quota.</p>
+      </div>
+      <div class="links">
+        <a class="button" href="https://aidetect.vn/dashboard/license" target="_blank" rel="noreferrer">Dashboard license</a>
+        <a class="button" href="https://aidetect.vn/dashboard/billing" target="_blank" rel="noreferrer">Billing</a>
+        <a class="button" href="https://aidetect.vn/pricing" target="_blank" rel="noreferrer">Pricing</a>
+      </div>
+    </section>
+  </main>
+
+  <script src="options.js"></script>
+</body>
+</html>

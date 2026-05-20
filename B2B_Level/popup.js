@@ -35,6 +35,13 @@ const elements = {
   highRiskCount: document.getElementById("highRiskCount"),
   autoApprovedCount: document.getElementById("autoApprovedCount"),
   autoDeletedCount: document.getElementById("autoDeletedCount"),
+  quotaPlan: document.getElementById("quotaPlan"),
+  quotaText: document.getElementById("quotaText"),
+  quotaFill: document.getElementById("quotaFill"),
+  quotaHint: document.getElementById("quotaHint"),
+  openOptions: document.getElementById("openOptions"),
+  refreshQuota: document.getElementById("refreshQuota"),
+  openBilling: document.getElementById("openBilling"),
   redLegend: document.getElementById("redLegend"),
   silentLegend: document.getElementById("silentLegend"),
   resetStats: document.getElementById("resetStats"),
@@ -43,7 +50,8 @@ const elements = {
 
 const popupState = {
   mode: DEFAULT_SETTINGS.aidetectAdminMode,
-  autoRunning: DEFAULT_SETTINGS.aidetectAdminAutoRunning
+  autoRunning: DEFAULT_SETTINGS.aidetectAdminAutoRunning,
+  quota: null
 };
 
 document.addEventListener("DOMContentLoaded", initPopup);
@@ -51,6 +59,7 @@ document.addEventListener("DOMContentLoaded", initPopup);
 function initPopup() {
   loadSettings((settings) => applySettings(settings));
   refreshStats();
+  refreshQuota(false);
   bindEvents();
   setupStorageListener();
 }
@@ -58,6 +67,11 @@ function initPopup() {
 function bindEvents() {
   elements.modeButtons.forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.dataset.mode === "auto" && !canUseAutoModeration()) {
+        openOptionsPage();
+        flashStatus("License required");
+        return;
+      }
       setMode(button.dataset.mode);
     });
   });
@@ -90,6 +104,12 @@ function bindEvents() {
   });
 
   elements.startModeration.addEventListener("click", () => {
+    if (!canUseAutoModeration()) {
+      openOptionsPage();
+      flashStatus("License required");
+      return;
+    }
+
     const nextRunning = !popupState.autoRunning;
     saveSettings({
       aidetectAdminMode: "auto",
@@ -97,6 +117,16 @@ function bindEvents() {
       aidetectAdminAutoRunning: nextRunning
     });
     updateModeUi("auto", nextRunning);
+  });
+
+  elements.openOptions.addEventListener("click", openOptionsPage);
+
+  elements.refreshQuota.addEventListener("click", () => {
+    refreshQuota(true);
+  });
+
+  elements.openBilling.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ action: "OPEN_AIDETECT_PAGE", page: "billing" });
   });
 
   elements.resetStats.addEventListener("click", () => {
@@ -262,6 +292,7 @@ function updateModeUi(mode, autoRunning = false) {
   elements.modeLabel.textContent = modeCopy.label;
   elements.startModeration.textContent = running ? "Dừng duyệt" : "Bắt đầu duyệt";
   elements.startModeration.classList.toggle("running", running);
+  elements.startModeration.disabled = normalizedMode === "auto" && !canUseAutoModeration();
   updateSectionVisibility(normalizedMode);
 }
 
@@ -283,6 +314,53 @@ function refreshStats() {
   });
 }
 
+function refreshQuota(forceRefresh) {
+  chrome.runtime.sendMessage({
+    action: "GET_QUOTA_STATUS",
+    forceRefresh
+  }, (quota) => {
+    if (chrome.runtime.lastError) {
+      renderQuota({
+        plan: "free",
+        quota_limit: 0,
+        quota_used: 0,
+        quota_remaining: 0,
+        license_status: "error",
+        error: "Cannot load quota"
+      });
+      return;
+    }
+
+    renderQuota(quota || {});
+  });
+}
+
+function renderQuota(quota) {
+  const limit = Math.max(0, Number(quota.quota_limit || 0));
+  const used = Math.max(0, Number(quota.quota_used || 0));
+  const remaining = Math.max(0, Number(quota.quota_remaining || 0));
+  const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+
+  popupState.quota = quota;
+  elements.quotaPlan.textContent = formatPlan(quota.plan || "free");
+  elements.quotaText.textContent = `${used} / ${limit}`;
+  elements.quotaFill.style.width = `${percent}%`;
+
+  if (quota.license_status === "missing") {
+    elements.quotaHint.textContent = "Manual scan is free. Add a License Key to enable auto.";
+  } else if (quota.license_status === "invalid") {
+    elements.quotaHint.textContent = "License Key is invalid or rotated.";
+  } else if (quota.quota_exceeded || (remaining <= 0 && limit > 0)) {
+    elements.quotaHint.textContent = "Auto quota is used up. Manual scan remains free.";
+  } else if (quota.license_status === "error") {
+    elements.quotaHint.textContent = quota.error || "Cannot check quota.";
+  } else {
+    elements.quotaHint.textContent = `${remaining} auto moderation requests remaining this month.`;
+  }
+
+  elements.startModeration.disabled = popupState.mode === "auto" && !canUseAutoModeration();
+}
+
 function renderStats(stats) {
   elements.scannedCount.textContent = Number(stats.scanned || 0);
   elements.warnedCount.textContent = Number(stats.warned || 0);
@@ -297,6 +375,30 @@ function flashStatus(message) {
   flashStatus.timer = window.setTimeout(() => {
     elements.saveStatus.textContent = "Đã lưu";
   }, 1200);
+}
+
+function canUseAutoModeration() {
+  const quota = popupState.quota;
+  return Boolean(
+    quota &&
+    quota.license_status === "valid" &&
+    quota.can_auto_moderate === true &&
+    Number(quota.quota_remaining || 0) > 0
+  );
+}
+
+function openOptionsPage() {
+  if (chrome.runtime.openOptionsPage) {
+    chrome.runtime.openOptionsPage();
+    return;
+  }
+
+  chrome.runtime.sendMessage({ action: "OPEN_AIDETECT_PAGE", page: "license" });
+}
+
+function formatPlan(plan) {
+  const value = String(plan || "free");
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function clamp(value, min, max) {

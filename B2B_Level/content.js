@@ -21,6 +21,8 @@
   const CARD_STATE_CACHE_MAX = 700;
   const CARD_DEBUG_STORAGE_KEY = "aidetectAdminDebugCards";
   const AUTO_BATCH_SIZE = 3;
+  const MAX_TEXT_LENGTH_TO_SEND = 8000;
+  const ANALYZE_SOURCE = "facebook_group_pending_post";
 
   const UI_TEXT = {
     approve: ["phê duyệt", "phe duyet", "approve"],
@@ -365,7 +367,9 @@
         }
 
         const result = { ...response, status: "done", contentHash };
-        setContentHashCache(contentHash, result);
+        if (!result.blocked) {
+          setContentHashCache(contentHash, result);
+        }
         resolve(result);
       });
     }).finally(() => {
@@ -376,11 +380,17 @@
     return request;
   }
 
-  function checkGroupRules(text, rules) {
+  function checkGroupRules(text, rules, context = {}) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({
         action: "CHECK_GROUP_RULES",
-        data: { text, rules }
+        data: {
+          text,
+          rules,
+          mode: context.mode || "auto",
+          contentHash: context.contentHash || "",
+          source: context.source || ANALYZE_SOURCE
+        }
       }, (response) => {
         if (chrome.runtime.lastError || !response) {
           resolve(null);
@@ -757,7 +767,7 @@
 
     resultCache.set(card, aiResult);
     const rulesResult = state.aidetectAdminGroupRules
-      ? await checkGroupRules(payload.text, state.aidetectAdminGroupRules)
+      ? await checkGroupRules(payload.text, state.aidetectAdminGroupRules, payload)
       : null;
     const verdict = computeVerdict(aiResult, rulesResult);
 
@@ -775,6 +785,10 @@
   }
 
   function computeVerdict(aiResult, rulesResult) {
+    if (aiResult?.blocked || aiResult?.quotaExceeded || aiResult?.licenseInvalid) {
+      return "skip";
+    }
+
     const isAiHigh = Number(aiResult?.score || 0) >= state.aidetectAdminThreshold;
     const isRulesViolation = rulesResult?.violation === true;
     const isInvalid = isAiHigh || isRulesViolation;
@@ -1586,6 +1600,26 @@
     return "";
   }
 
+  function extractGroupIdFromUrl(url) {
+    const match = String(url || "").match(/\/groups\/([^/?#]+)/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : "";
+  }
+
+  function buildClientMeta() {
+    let extensionVersion = "";
+    try {
+      extensionVersion = chrome.runtime.getManifest().version || "";
+    } catch (error) {
+      extensionVersion = "";
+    }
+
+    return {
+      extensionVersion,
+      language: navigator.language || "",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || ""
+    };
+  }
+
   function getPostSlot(element) {
     const slot = element?.closest?.("[aria-posinset]");
     return slot instanceof HTMLElement ? slot : null;
@@ -1599,21 +1633,28 @@
       .filter((href) => !href.includes("/groups/") || href.includes("/posts/") || href.includes("pending_posts") || href.includes("story_fbid=") || href.includes("set=gm."))
       .slice(0, 10);
     const assignCardIndex = options.assignCardIndex !== false;
+    const postId = extractStablePostIdFromLinks(card);
+    const groupId = extractGroupIdFromUrl(location.href);
+    const mode = isAutoModeActive() ? "auto" : "manual";
 
     return {
       platform: "facebook_group_admin",
       pageType: "pending_post_review",
-      mode: state.aidetectAdminMode,
+      mode,
+      source: ANALYZE_SOURCE,
       cardIndex: assignCardIndex ? getCardIndex(card) : Number(card.dataset.aidetectAdminCardIndex || 0),
       url: location.href,
-      text,
+      text: text.slice(0, MAX_TEXT_LENGTH_TO_SEND),
       mediaCount: countMedia(card),
       imageCount: card.querySelectorAll("img").length,
       videoCount: card.querySelectorAll("video").length,
+      postId,
+      groupId,
       links,
       groupRules: state.aidetectAdminGroupRules,
       autoSkipInvalid: shouldSkipInvalidInAuto(),
-      autoAction: state.aidetectAdminAutoAction
+      autoAction: state.aidetectAdminAutoAction,
+      clientMeta: buildClientMeta()
     };
   }
 
@@ -1816,9 +1857,12 @@
     };
     const decision = config[verdict] || config.skip;
     const score = Math.round(Number(aiResult?.score) || 0);
-    const ruleNote = rulesResult?.violation
+    let ruleNote = rulesResult?.violation
       ? `<small>Vi phạm quy tắc: ${escapeHtml(rulesResult.reason || "Không rõ lý do")}</small>`
       : "";
+    if (aiResult?.blocked) {
+      ruleNote = `<small>${escapeHtml(aiResult.reason || "Auto moderation is blocked. Manual scan is still available.")}</small>`;
+    }
 
     const host = getOrCreateBadgeHost(card);
     host.dataset.aidetectAdminResult = JSON.stringify(aiResult || {});
@@ -1924,8 +1968,50 @@
       });
     }
 
+    root.querySelectorAll("[data-aidetect-admin-feedback]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const feedbackType = button.getAttribute("data-aidetect-admin-feedback");
+        reportFeedback(card, result, feedbackType, root);
+      });
+    });
+
     card.style.outline = "2px solid rgba(220, 38, 38, 0.42)";
     card.style.outlineOffset = "3px";
+  }
+
+  function reportFeedback(card, result, feedbackType, root) {
+    const allowedTypes = new Set(["false_positive", "false_negative", "wrong_reason"]);
+    if (!allowedTypes.has(feedbackType)) return;
+
+    const status = root.querySelector("[data-aidetect-admin-feedback-status]");
+    const buttons = Array.from(root.querySelectorAll("[data-aidetect-admin-feedback]"));
+    buttons.forEach((button) => {
+      button.disabled = true;
+    });
+    if (status) status.textContent = "Sending feedback...";
+
+    chrome.runtime.sendMessage({
+      action: "REPORT_FEEDBACK",
+      data: {
+        contentHash: result?.contentHash || card?.dataset?.aidetectAdminContentHash || "",
+        predictedScore: Number(result?.score || 0),
+        feedbackType,
+        source: ANALYZE_SOURCE,
+        url: location.href,
+        createdAt: new Date().toISOString()
+      }
+    }, (response) => {
+      buttons.forEach((button) => {
+        button.disabled = false;
+      });
+
+      if (chrome.runtime.lastError || !response?.ok) {
+        if (status) status.textContent = response?.error || "Cannot send feedback. Check License Key.";
+        return;
+      }
+
+      if (status) status.textContent = "Feedback sent.";
+    });
   }
 
   function getOrCreateBadgeHost(card) {
@@ -2084,6 +2170,36 @@
         .signals strong {
           color: #b91c1c;
         }
+
+        .feedback {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 6px;
+          margin-top: 10px;
+        }
+
+        .feedback button {
+          border: 1px solid #fecaca;
+          border-radius: 6px;
+          background: #ffffff;
+          color: #7f1d1d;
+          cursor: pointer;
+          font: inherit;
+          font-size: 11px;
+          font-weight: 700;
+          padding: 5px 7px;
+        }
+
+        .feedback button:disabled {
+          cursor: default;
+          opacity: 0.6;
+        }
+
+        .feedback-status {
+          color: #6b7280;
+          font-size: 11px;
+        }
       </style>
 
       <div class="wrap" role="group" aria-label="AIDetect AI warning">
@@ -2098,6 +2214,12 @@
         <div class="detail" data-aidetect-admin-detail hidden>
           <p>${reason}</p>
           <ul class="signals">${signalMarkup}</ul>
+          <div class="feedback" aria-label="AIDetect feedback">
+            <button type="button" data-aidetect-admin-feedback="false_positive">False positive</button>
+            <button type="button" data-aidetect-admin-feedback="false_negative">False negative</button>
+            <button type="button" data-aidetect-admin-feedback="wrong_reason">Wrong reason</button>
+            <span class="feedback-status" data-aidetect-admin-feedback-status></span>
+          </div>
         </div>
       </div>
     `;

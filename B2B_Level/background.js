@@ -29,9 +29,20 @@ const MOCK_DEFAULT_STATS = {
 };
 
 const USE_MOCK_REVIEW_DATA = false;
-const API_BASE = "https://longnguyen3426-aidetect-extension.hf.space";
-const API_ANALYZE_TIMEOUT_MS = 12000;
-const API_RULES_TIMEOUT_MS = 10000;
+const AIDETECT_API_BASE = "https://aidetect.vn";
+const DASHBOARD_URL = "https://aidetect.vn/dashboard";
+const LICENSE_URL = `${DASHBOARD_URL}/license`;
+const BILLING_URL = `${DASHBOARD_URL}/billing`;
+const PRICING_URL = "https://aidetect.vn/pricing";
+const LICENSE_KEY_STORAGE_KEY = "aidetectLicenseKey";
+const QUOTA_CACHE_KEY = "aidetectQuotaCache:v1";
+const LAST_ERROR_KEY = "aidetectLastError";
+const API_ANALYZE_TIMEOUT_MS = 25000;
+const API_RULES_TIMEOUT_MS = 20000;
+const API_QUOTA_TIMEOUT_MS = 10000;
+const API_FEEDBACK_TIMEOUT_MS = 10000;
+const QUOTA_CACHE_TTL_MS = 60 * 1000;
+const MAX_TEXT_LENGTH_TO_SEND = 8000;
 const ANALYSIS_CACHE_KEY = "aidetectAdminAnalysisCache:v1";
 const ANALYSIS_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const ANALYSIS_CACHE_MAX = 700;
@@ -75,7 +86,16 @@ const MOCK_PENDING_POST_RESULTS = [
 const analysisCache = new Map();
 let analysisCacheLoaded = false;
 
-chrome.runtime.onInstalled.addListener(() => {
+class AIDetectApiError extends Error {
+  constructor(message, status = 0, payload = null) {
+    super(message);
+    this.name = "AIDetectApiError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
   chrome.storage.sync.get(null, (items) => {
     const settings = normalizeSettings(items || {});
     chrome.storage.sync.set({
@@ -83,6 +103,10 @@ chrome.runtime.onInstalled.addListener(() => {
       aidetectAdminEnabled: settings.aidetectAdminMode !== "off"
     });
   });
+
+  if (details.reason === "install") {
+    chrome.runtime.openOptionsPage();
+  }
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -105,6 +129,58 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "GET_ADMIN_STATS") {
     getTodayStats().then(sendResponse);
     return true;
+  }
+
+  if (request.action === "GET_QUOTA_STATUS") {
+    getQuotaStatus({ forceRefresh: Boolean(request.forceRefresh) })
+      .then(sendResponse)
+      .catch((error) => {
+        console.error("AIDetect Admin quota check failed:", error);
+        sendResponse(buildQuotaError(error));
+      });
+    return true;
+  }
+
+  if (request.action === "SAVE_LICENSE_KEY") {
+    saveLicenseKey(request.licenseKey)
+      .then(() => getQuotaStatus({ forceRefresh: true }))
+      .then(sendResponse)
+      .catch((error) => {
+        console.error("AIDetect Admin license save failed:", error);
+        sendResponse(buildQuotaError(error));
+      });
+    return true;
+  }
+
+  if (request.action === "REMOVE_LICENSE_KEY") {
+    removeLicenseKey()
+      .then(() => buildMissingLicenseQuota())
+      .then(sendResponse)
+      .catch((error) => {
+        console.error("AIDetect Admin license remove failed:", error);
+        sendResponse(buildQuotaError(error));
+      });
+    return true;
+  }
+
+  if (request.action === "REPORT_FEEDBACK") {
+    handleFeedbackReport(request.data)
+      .then(sendResponse)
+      .catch((error) => {
+        console.error("AIDetect Admin feedback failed:", error);
+        sendResponse({
+          ok: false,
+          status: error.status || 0,
+          error: error.message || "Cannot send feedback"
+        });
+      });
+    return true;
+  }
+
+  if (request.action === "OPEN_AIDETECT_PAGE") {
+    openAidetectPage(request.page);
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (request.action === "CHECK_GROUP_RULES") {
@@ -170,7 +246,7 @@ function normalizeStats(stats) {
 
 async function handlePendingPostScan(payload) {
   const result = await analyzePendingPost(payload);
-  if (!result.cached) {
+  if (!result.cached && !result.blocked) {
     await updateStats(result);
   }
   return result;
@@ -203,7 +279,7 @@ async function handleGroupRulesCheck(data) {
   }
 
   try {
-    return await callRulesApi(text, rules);
+    return await callRulesApi(text, rules, data || {});
   } catch (error) {
     console.error("AIDetect Admin rules API error:", error);
     return { violation: false, reason: "", score: 0 };
@@ -215,6 +291,7 @@ async function analyzePendingPost(payload) {
   const mediaCount = Number(payload?.mediaCount || 0);
   const videoCount = Number(payload?.videoCount || 0);
   const contentHash = getPayloadContentHash(payload, text, mediaCount, videoCount);
+  const mode = payload?.mode === "auto" ? "auto" : "manual";
   const mockResult = getMockPendingPostResult(payload, text);
 
   if (mockResult) {
@@ -240,23 +317,45 @@ async function analyzePendingPost(payload) {
     result = await callAnalyzeApi(payload, text, mediaCount, videoCount);
   } catch (error) {
     console.error("AIDetect Admin analyze API error:", error);
-    result = analyzeWithHeuristics(payload, text, mediaCount, videoCount);
+    result = isBlockingApiError(error)
+      ? buildBlockedAnalysisResult(error, payload, text, contentHash, mode)
+      : analyzeWithHeuristics(payload, text, mediaCount, videoCount);
   }
 
-  await setCachedAnalysisResult(payload, contentHash, result);
+  if (!result.blocked) {
+    await setCachedAnalysisResult(payload, contentHash, result);
+  }
   return result;
 }
 
 async function callAnalyzeApi(payload, text, mediaCount, videoCount) {
-  const data = await fetchJsonWithTimeout(`${API_BASE}/analyze`, {
+  const mode = payload?.mode === "auto" ? "auto" : "manual";
+  const headers = await getAuthHeaders();
+  if (mode === "auto" && !headers.Authorization) {
+    throw new AIDetectApiError("License key required", 401, {
+      error: "License key required",
+      dashboard_url: LICENSE_URL,
+      manual_available: true
+    });
+  }
+
+  const data = await fetchJsonWithTimeout(`${AIDETECT_API_BASE}/api/v1/analyze`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({
-      text: text.slice(0, 6000),
+      text: text.slice(0, MAX_TEXT_LENGTH_TO_SEND),
       mediaCount,
+      imageCount: Number(payload?.imageCount || 0),
       videoCount,
       contentHash: payload?.contentHash || "",
-      platform: payload?.platform || "facebook_group_admin"
+      mode,
+      platform: payload?.platform || "facebook_group_admin",
+      source: payload?.source || "facebook_group_pending_post",
+      pageType: payload?.pageType || "pending_post_review",
+      groupId: payload?.groupId || "",
+      postId: payload?.postId || "",
+      url: payload?.url || "",
+      clientMeta: payload?.clientMeta || {}
     })
   }, API_ANALYZE_TIMEOUT_MS);
   const score = clamp(Math.round(Number(data?.score) || 0), 0, 100);
@@ -270,17 +369,31 @@ async function callAnalyzeApi(payload, text, mediaCount, videoCount) {
     summary: String(data?.summary || text.slice(0, 220)).slice(0, 220),
     model: String(data?.model || ""),
     latencyMs: Number(data?.latency_ms || 0),
-    source: "api"
+    source: "api",
+    mode
   };
 }
 
-async function callRulesApi(text, rules) {
-  const data = await fetchJsonWithTimeout(`${API_BASE}/check-rules`, {
+async function callRulesApi(text, rules, payload = {}) {
+  const mode = payload?.mode === "manual" ? "manual" : "auto";
+  const headers = await getAuthHeaders();
+  if (mode === "auto" && !headers.Authorization) {
+    throw new AIDetectApiError("License key required", 401, {
+      error: "License key required",
+      dashboard_url: LICENSE_URL,
+      manual_available: true
+    });
+  }
+
+  const data = await fetchJsonWithTimeout(`${AIDETECT_API_BASE}/api/v1/check-rules`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({
-      text: text.slice(0, 6000),
-      rules: rules.slice(0, 2000)
+      text: text.slice(0, MAX_TEXT_LENGTH_TO_SEND),
+      rules: rules.slice(0, 2000),
+      mode,
+      contentHash: payload?.contentHash || "",
+      source: payload?.source || "facebook_group_pending_post"
     })
   }, API_RULES_TIMEOUT_MS);
 
@@ -300,15 +413,251 @@ async function fetchJsonWithTimeout(url, options, timeoutMs) {
       ...options,
       signal: controller.signal
     });
+    const payload = await parseResponsePayload(response);
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      throw new AIDetectApiError(
+        payload?.error || `API error: ${response.status}`,
+        response.status,
+        payload
+      );
     }
 
-    return await response.json();
+    return payload;
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function parseResponsePayload(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+
+  const text = await response.text();
+  return text ? { error: text } : {};
+}
+
+async function getAuthHeaders() {
+  const licenseKey = await getLicenseKey();
+  const headers = {
+    "Content-Type": "application/json",
+    "X-AIDetect-Client": "chrome-extension"
+  };
+
+  if (licenseKey) {
+    headers.Authorization = `Bearer ${licenseKey}`;
+  }
+
+  return headers;
+}
+
+async function getLicenseKey() {
+  const items = await getStorageSync({ [LICENSE_KEY_STORAGE_KEY]: "" });
+  return String(items?.[LICENSE_KEY_STORAGE_KEY] || "").trim();
+}
+
+async function saveLicenseKey(licenseKey) {
+  const cleanKey = String(licenseKey || "").trim();
+  await setStorageSync({ [LICENSE_KEY_STORAGE_KEY]: cleanKey });
+  await setStorageLocal({ [QUOTA_CACHE_KEY]: null });
+}
+
+async function removeLicenseKey() {
+  await removeStorageSync(LICENSE_KEY_STORAGE_KEY);
+  await setStorageLocal({ [QUOTA_CACHE_KEY]: null });
+}
+
+async function getQuotaStatus({ forceRefresh = false } = {}) {
+  const licenseKey = await getLicenseKey();
+  if (!licenseKey) {
+    return buildMissingLicenseQuota();
+  }
+
+  const cached = await getStorageLocal({ [QUOTA_CACHE_KEY]: null });
+  const cacheEntry = cached?.[QUOTA_CACHE_KEY];
+  const now = Date.now();
+  if (!forceRefresh && cacheEntry?.data && now - Number(cacheEntry.cachedAt || 0) < QUOTA_CACHE_TTL_MS) {
+    return cacheEntry.data;
+  }
+
+  try {
+    const data = await fetchJsonWithTimeout(`${AIDETECT_API_BASE}/api/v1/quota`, {
+      method: "GET",
+      headers: await getAuthHeaders()
+    }, API_QUOTA_TIMEOUT_MS);
+    const quota = normalizeQuotaStatus(data, "valid");
+    await setStorageLocal({
+      [QUOTA_CACHE_KEY]: {
+        data: quota,
+        cachedAt: now
+      }
+    });
+    return quota;
+  } catch (error) {
+    await rememberApiError(error);
+
+    if (isBlockingApiError(error)) {
+      return buildQuotaError(error);
+    }
+
+    if (cacheEntry?.data) {
+      return {
+        ...cacheEntry.data,
+        stale: true,
+        last_error: error.message || "Cannot refresh quota"
+      };
+    }
+
+    throw error;
+  }
+}
+
+function normalizeQuotaStatus(data, licenseStatus) {
+  const limit = Math.max(0, Number(data?.quota_limit || 0));
+  const used = Math.max(0, Number(data?.quota_used || 0));
+  const remaining = Math.max(0, Number(data?.quota_remaining ?? Math.max(limit - used, 0)));
+
+  return {
+    plan: String(data?.plan || "free"),
+    quota_limit: limit,
+    quota_used: used,
+    quota_remaining: remaining,
+    reset_at: String(data?.reset_at || ""),
+    can_auto_moderate: Boolean(data?.can_auto_moderate && remaining > 0),
+    license_status: licenseStatus,
+    dashboard_url: LICENSE_URL,
+    billing_url: BILLING_URL,
+    pricing_url: PRICING_URL,
+    manual_available: true
+  };
+}
+
+function buildMissingLicenseQuota() {
+  return {
+    plan: "free",
+    quota_limit: 0,
+    quota_used: 0,
+    quota_remaining: 0,
+    reset_at: "",
+    can_auto_moderate: false,
+    license_status: "missing",
+    dashboard_url: LICENSE_URL,
+    billing_url: BILLING_URL,
+    pricing_url: PRICING_URL,
+    manual_available: true
+  };
+}
+
+function buildQuotaError(error) {
+  const status = Number(error?.status || 0);
+  const payload = error?.payload || {};
+  const licenseStatus = status === 401 ? "invalid" : "error";
+
+  return {
+    plan: String(payload.plan || "free"),
+    quota_limit: Math.max(0, Number(payload.quota_limit || 0)),
+    quota_used: Math.max(0, Number(payload.quota_used || 0)),
+    quota_remaining: Math.max(0, Number(payload.quota_remaining || 0)),
+    reset_at: String(payload.reset_at || ""),
+    can_auto_moderate: false,
+    license_status: status === 429 ? "valid" : licenseStatus,
+    quota_exceeded: status === 429,
+    status,
+    error: String(payload.error || error?.message || "Cannot check quota"),
+    dashboard_url: String(payload.dashboard_url || LICENSE_URL),
+    billing_url: BILLING_URL,
+    pricing_url: String(payload.upgrade_url || PRICING_URL),
+    manual_available: true
+  };
+}
+
+function isBlockingApiError(error) {
+  return error instanceof AIDetectApiError && (error.status === 401 || error.status === 429);
+}
+
+function buildBlockedAnalysisResult(error, payload, text, contentHash, mode) {
+  const quotaError = buildQuotaError(error);
+  const quotaExceeded = error.status === 429;
+
+  return {
+    score: 0,
+    type: quotaExceeded ? "Auto quota exceeded" : "License required",
+    reason: quotaExceeded
+      ? "Auto moderation quota is used up for this month. Manual scan is still available."
+      : "Auto moderation requires a valid AIDetect License Key. Manual scan is still available.",
+    signals: [],
+    summary: text.slice(0, 220),
+    source: "api_error",
+    mode,
+    contentHash,
+    blocked: true,
+    quotaExceeded,
+    licenseInvalid: error.status === 401,
+    manualAvailable: true,
+    status: error.status,
+    dashboardUrl: quotaError.dashboard_url,
+    billingUrl: quotaError.billing_url,
+    pricingUrl: quotaError.pricing_url,
+    postId: payload?.postId || ""
+  };
+}
+
+async function handleFeedbackReport(data) {
+  const contentHash = String(data?.contentHash || "").trim();
+  if (!contentHash) {
+    return { ok: false, status: 400, error: "Missing content hash" };
+  }
+
+  const licenseKey = await getLicenseKey();
+  if (!licenseKey) {
+    return { ok: false, status: 401, error: "License key required" };
+  }
+
+  try {
+    await fetchJsonWithTimeout(`${AIDETECT_API_BASE}/api/v1/feedback`, {
+      method: "POST",
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({
+        contentHash,
+        predictedScore: Number(data?.predictedScore || 0),
+        feedbackType: data?.feedbackType,
+        source: data?.source || "facebook_group_pending_post",
+        url: data?.url || "",
+        createdAt: data?.createdAt || new Date().toISOString()
+      })
+    }, API_FEEDBACK_TIMEOUT_MS);
+    return { ok: true };
+  } catch (error) {
+    await rememberApiError(error);
+    return {
+      ok: false,
+      status: error.status || 0,
+      error: error.message || "Cannot send feedback"
+    };
+  }
+}
+
+async function rememberApiError(error) {
+  await setStorageLocal({
+    [LAST_ERROR_KEY]: {
+      message: String(error?.message || "Unknown API error"),
+      status: Number(error?.status || 0),
+      payload: error?.payload || null,
+      at: new Date().toISOString()
+    }
+  });
+}
+
+function openAidetectPage(page) {
+  const urlByPage = {
+    dashboard: DASHBOARD_URL,
+    license: LICENSE_URL,
+    billing: BILLING_URL,
+    pricing: PRICING_URL
+  };
+  chrome.tabs.create({ url: urlByPage[page] || DASHBOARD_URL });
 }
 
 function normalizeApiSignals(signals, text, mediaCount, videoCount, score) {
@@ -741,6 +1090,14 @@ function getStorageLocal(defaults) {
 
 function getStorageSync(defaults) {
   return new Promise((resolve) => chrome.storage.sync.get(defaults, resolve));
+}
+
+function setStorageSync(items) {
+  return new Promise((resolve) => chrome.storage.sync.set(items, resolve));
+}
+
+function removeStorageSync(keys) {
+  return new Promise((resolve) => chrome.storage.sync.remove(keys, resolve));
 }
 
 function setStorageLocal(items) {
