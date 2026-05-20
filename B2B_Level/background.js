@@ -29,11 +29,11 @@ const MOCK_DEFAULT_STATS = {
 };
 
 const USE_MOCK_REVIEW_DATA = false;
-const AIDETECT_API_BASE = "https://aidetect.vn";
-const DASHBOARD_URL = "https://aidetect.vn/dashboard";
+const AIDETECT_API_BASE = "https://aidetect-web.vercel.app";
+const DASHBOARD_URL = `${AIDETECT_API_BASE}/dashboard`;
 const LICENSE_URL = `${DASHBOARD_URL}/license`;
 const BILLING_URL = `${DASHBOARD_URL}/billing`;
-const PRICING_URL = "https://aidetect.vn/pricing";
+const PRICING_URL = `${AIDETECT_API_BASE}/pricing`;
 const LICENSE_KEY_STORAGE_KEY = "aidetectLicenseKey";
 const QUOTA_CACHE_KEY = "aidetectQuotaCache:v1";
 const LAST_ERROR_KEY = "aidetectLastError";

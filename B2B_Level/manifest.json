@@ -11,7 +11,7 @@
   "host_permissions": [
     "https://www.facebook.com/groups/*",
     "https://facebook.com/groups/*",
-    "https://aidetect.vn/*"
+    "https://aidetect-web.vercel.app/*"
   ],
   "action": {
     "default_popup": "popup.html",

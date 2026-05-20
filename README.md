@@ -13,7 +13,7 @@ Manifest hien tai:
 - Content script chay tren Facebook Group URLs.
 - Background service worker xu ly scan, rule check, quota, feedback, stats.
 - Permissions: `storage`, `activeTab`.
-- Host permissions: Facebook Groups va `https://aidetect.vn/*`.
+- Host permissions: Facebook Groups va `https://aidetect-web.vercel.app/*`.
 - Options page de nhap/xoa/kiem tra License Key.
 
 ## Cau truc file
@@ -76,7 +76,7 @@ aidetectAdminAutoRunning: false
 4. `findPendingPostCards()` tim cac card bai dang cho duyet.
 5. `buildCardPayload()` extract text, media count, links, mode, group/post id, client meta, group rules.
 6. `scanCardAsync()` gui message `SCAN_PENDING_POST` den `background.js`.
-7. `background.js` goi `https://aidetect.vn/api/v1/analyze` va tra ve `score`, `type`, `reason`, `signals`.
+7. `background.js` goi `https://aidetect-web.vercel.app/api/v1/analyze` va tra ve `score`, `type`, `reason`, `signals`.
 8. `content.js` render badge neu score >= threshold.
 9. Neu auto mode dang chay, `analyzeAndDecide()` tinh verdict va co the click approve/delete.
 
@@ -195,7 +195,7 @@ Badge dung Shadow DOM de giam xung dot CSS voi Facebook.
 
 ```js
 const USE_MOCK_REVIEW_DATA = false;
-const AIDETECT_API_BASE = "https://aidetect.vn";
+const AIDETECT_API_BASE = "https://aidetect-web.vercel.app";
 ```
 
 Endpoint extension dang dung:
