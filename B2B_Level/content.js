@@ -204,10 +204,39 @@
       Number(payload.mediaCount || 0),
       Number(payload.videoCount || 0),
       Array.isArray(payload.imageUrls) ? payload.imageUrls.slice(0, 4).join("|").slice(0, 2400) : "",
-      Array.isArray(payload.links) ? payload.links.slice(0, 5).join("|").slice(0, 1200) : ""
+      getStableHashLinks(payload.links).join("|").slice(0, 1200)
     ].join("|");
 
     return fnv1a32(removeDiacritics(normalized.toLowerCase()));
+  }
+
+  function getStableHashLinks(links) {
+    if (!Array.isArray(links)) return [];
+
+    return Array.from(new Set(
+      links
+        .map((href) => getCanonicalPostLink(href))
+        .filter(Boolean)
+    )).slice(0, 5);
+  }
+
+  function getCanonicalPostLink(href) {
+    const value = String(href || "");
+    const patterns = [
+      [/\/pending_posts\/(\d+)/i, "pending"],
+      [/[?&]set=gm\.(\d+)/i, "gm"],
+      [/[?&]story_fbid=(\d+)/i, "story"],
+      [/[?&]fbid=(\d+)/i, "fbid"],
+      [/\/posts\/(\d+)/i, "post"],
+      [/\/permalink\/(\d+)/i, "permalink"]
+    ];
+
+    for (const [pattern, prefix] of patterns) {
+      const match = value.match(pattern);
+      if (match?.[1]) return `${prefix}:${match[1]}`;
+    }
+
+    return "";
   }
 
   function setContentHashCache(hash, result) {
@@ -1601,20 +1630,9 @@
       .map((link) => link.href || link.getAttribute("href") || "")
       .filter(Boolean);
 
-    const patterns = [
-      /\/pending_posts\/(\d+)/i,
-      /[?&]set=gm\.(\d+)/i,
-      /[?&]story_fbid=(\d+)/i,
-      /[?&]fbid=(\d+)/i,
-      /\/posts\/(\d+)/i,
-      /\/permalink\/(\d+)/i
-    ];
-
     for (const href of hrefs) {
-      for (const pattern of patterns) {
-        const match = href.match(pattern);
-        if (match?.[1]) return match[1];
-      }
+      const canonical = getCanonicalPostLink(href);
+      if (canonical) return canonical.split(":").pop() || "";
     }
 
     return "";
@@ -1647,11 +1665,7 @@
 
   function buildCardPayload(card, options = {}) {
     const text = extractPendingPostText(card);
-    const links = Array.from(card.querySelectorAll("a[href]"))
-      .map((link) => link.href)
-      .filter(Boolean)
-      .filter((href) => !href.includes("/groups/") || href.includes("/posts/") || href.includes("pending_posts") || href.includes("story_fbid=") || href.includes("set=gm."))
-      .slice(0, 10);
+    const links = getStablePostLinks(card);
     const assignCardIndex = options.assignCardIndex !== false;
     const postId = extractStablePostIdFromLinks(card);
     const groupId = extractGroupIdFromUrl(location.href);
@@ -1680,6 +1694,16 @@
       autoAction: state.aidetectAdminAutoAction,
       clientMeta: buildClientMeta()
     };
+  }
+
+  function getStablePostLinks(card) {
+    if (!(card instanceof HTMLElement)) return [];
+
+    return Array.from(new Set(
+      Array.from(card.querySelectorAll("a[href]"))
+        .map((link) => link.href || link.getAttribute("href") || "")
+        .filter((href) => getCanonicalPostLink(href))
+    )).slice(0, 10);
   }
 
   function getCardIndex(card) {
@@ -1758,7 +1782,10 @@
     const normalized = removeDiacritics(line.toLowerCase());
     if (UI_TEXT.bulkChrome.some((label) => normalized === removeDiacritics(label))) return true;
     if (/^\d+\s*(muc|item|post|bai)/i.test(normalized)) return true;
-    if (/^(vua xong|just now|dang cho|pending)$/i.test(normalized)) return true;
+    if (/^(vua xong|just now|dang cho|pending)(\s*[·.]\s*.*)?$/i.test(normalized)) return true;
+    if (/^\d+\s*(giay|phut|gio|ngay|tuan|thang|nam|sec|secs|min|mins|hr|hrs|day|days|week|weeks|month|months|year|years|s|m|h|d|w)(\s*[·.]\s*.*)?$/i.test(normalized)) return true;
+    if (/^(phe duyet|approve|tu choi|reject|xoa|delete|an|hide|khong thich hop|not suitable)(\s*[·.]\s*.*)?$/i.test(normalized)) return true;
+    if (/^(\.\.\.|…|more|them|xem them|see more)$/i.test(normalized)) return true;
     if (normalized.length <= 2) return true;
     return false;
   }

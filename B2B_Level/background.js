@@ -708,10 +708,39 @@ function getPayloadContentHash(payload, text, mediaCount, videoCount) {
     Number(mediaCount || 0),
     Number(videoCount || 0),
     normalizeImageUrls(payload?.imageUrls).join("|").slice(0, 2400),
-    Array.isArray(payload?.links) ? payload.links.slice(0, 5).join("|").slice(0, 1200) : ""
+    getStableHashLinks(payload?.links).join("|").slice(0, 1200)
   ].join("|");
 
   return fnv1a32(removeDiacritics(normalized.toLowerCase()));
+}
+
+function getStableHashLinks(links) {
+  if (!Array.isArray(links)) return [];
+
+  return Array.from(new Set(
+    links
+      .map((href) => getCanonicalPostLink(href))
+      .filter(Boolean)
+  )).slice(0, 5);
+}
+
+function getCanonicalPostLink(href) {
+  const value = String(href || "");
+  const patterns = [
+    [/\/pending_posts\/(\d+)/i, "pending"],
+    [/[?&]set=gm\.(\d+)/i, "gm"],
+    [/[?&]story_fbid=(\d+)/i, "story"],
+    [/[?&]fbid=(\d+)/i, "fbid"],
+    [/\/posts\/(\d+)/i, "post"],
+    [/\/permalink\/(\d+)/i, "permalink"]
+  ];
+
+  for (const [pattern, prefix] of patterns) {
+    const match = value.match(pattern);
+    if (match?.[1]) return `${prefix}:${match[1]}`;
+  }
+
+  return "";
 }
 
 async function getCachedAnalysisResult(payload, contentHash) {
@@ -775,20 +804,9 @@ function extractPayloadStablePostId(payload) {
     payload?.url || ""
   ].filter(Boolean);
 
-  const patterns = [
-    /\/pending_posts\/(\d+)/i,
-    /[?&]set=gm\.(\d+)/i,
-    /[?&]story_fbid=(\d+)/i,
-    /[?&]fbid=(\d+)/i,
-    /\/posts\/(\d+)/i,
-    /\/permalink\/(\d+)/i
-  ];
-
   for (const value of values) {
-    for (const pattern of patterns) {
-      const match = String(value).match(pattern);
-      if (match?.[1]) return match[1];
-    }
+    const canonical = getCanonicalPostLink(value);
+    if (canonical) return canonical.split(":").pop() || "";
   }
 
   return "";

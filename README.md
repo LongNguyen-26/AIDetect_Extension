@@ -177,7 +177,7 @@ Cache nay nam trong service worker/background, nen van con sau khi Facebook relo
 
 Key cache gom:
 
-1. `hash:{contentHash}`: hash theo text, media count, `imageUrls`, links va group rules da extract.
+1. `hash:{contentHash}`: hash theo text da loai UI/time/action, media count, `imageUrls`, va canonical post links. Khong dua profile/tracking links cua Facebook vao hash vi chung co the doi khi scroll/re-render.
 2. `post:{id}`: post id lay tu `payload.links` hoac `payload.url`, gom `/pending_posts/{id}`, `set=gm.{id}`, `story_fbid`, `fbid`, `/posts/{id}`, `/permalink/{id}`.
 
 Luong xu ly trong `analyzePendingPost()`:
@@ -427,6 +427,7 @@ Gan day da sua bug Facebook re-render, bo sot card o giua, badge gan nham sideba
 - Them debug log co the copy tu console.
 - Them guard de loai sidebar/header/filter toolbar khoi pending card candidates, tranh badge ve len ten group/sidebar.
 - Them persistent analysis cache trong `background.js` theo `hash:{contentHash}` va `post:{id}` de F5 khong goi lai backend API cho bai cu trong TTL 6 gio.
+- Sua cache cho text-only/random-caption posts: `contentHash` chi dung canonical post links va loai dong UI nhu thoi gian, approve/reject. Truoc do cac link phu/tracking hoac timestamp cua Facebook co the lam hash drift khi luot di/luot lai.
 
 Gan day da pivot detect logic theo chien luoc image AI + rules-only text:
 
