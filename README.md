@@ -4,7 +4,9 @@ README nay mo ta extension trong thu muc `AIDetect_Extension` de co the tiep tuc
 
 ## Muc tieu
 
-Extension ho tro admin/moderator duyet bai Facebook Group bang cach quet cac bai viet dang cho duyet, tinh diem rui ro AI, hien badge canh bao tren card bai viet va co che do tu dong duyet/xoa theo cau hinh.
+Extension ho tro admin/moderator duyet bai Facebook Group bang cach quet cac bai viet dang cho duyet, detect anh co dau hieu AI/misleading, kiem tra caption/text theo rule cong dong, hien badge canh bao tren card bai viet va co che do tu dong duyet/xoa theo cau hinh.
+
+Strategy hien tai co chu y tranh detect "AI text" cho bai chi co chu. Text-only post chi duoc danh gia theo rule rieng cua group de giam false positive.
 
 Manifest hien tai:
 
@@ -41,12 +43,14 @@ Vai tro tung file:
 
 - `B2B_Level/manifest.json`: khai bao Chrome Extension MV3.
 - `B2B_Level/content.js`: script chay trong Facebook, tim card bai cho duyet, extract noi dung, render badge, xu ly manual/auto moderation.
-- `B2B_Level/background.js`: service worker nhan message tu content script, cham diem bai viet, check group rules va cap nhat thong ke.
+- `B2B_Level/background.js`: service worker nhan message tu content script, route `/analyze`, cache ket qua, fallback an toan va cap nhat thong ke.
 - `B2B_Level/popup.html`: UI popup cau hinh che do quet, nguong diem, rule group, action auto.
 - `B2B_Level/popup.js`: logic popup, dong bo cau hinh vao `chrome.storage.sync`.
 - `B2B_Level/options.html`: UI nhap/xoa/kiem tra License Key.
 - `B2B_Level/options.js`: logic options page va validate quota qua backend.
 - `hf-space/`: FastAPI backend de deploy len Hugging Face Space, goi GROQ API qua `/analyze` va `/check-rules`.
+  - Text/rules model: `llama-3.1-8b-instant`.
+  - Vision model: `meta-llama/llama-4-scout-17b-16e-instruct`.
 
 ## Che do hoat dong
 
@@ -68,16 +72,30 @@ aidetectAdminAutoRunning: false
 
 `approve_only` co nghia la auto chi duyet bai hop le, bai rui ro se bi skip. `approve_and_delete` co the xoa bai bi danh gia khong hop le.
 
+Popup se seed san mot bo group rules mau vao o nhap rule lan dau tien neu admin chua co rule. Flag `aidetectAdminDefaultRulesSeeded` dam bao neu admin xoa rule sau nay thi extension khong tu dien lai.
+
+## Strategy detect hien tai
+
+Quyet dinh thiet ke moi:
+
+- Bai text-only: khong detect text do AI viet. Chi goi text model de kiem tra text co vi pham group rules hay khong.
+- Bai co anh: gui `imageUrls` + caption/text + group rules qua vision model de detect anh AI/misleading va check caption/rules trong cung mot lan `/analyze`.
+- Bai co media nhung khong lay duoc URL anh: danh dau `needsManualReview` thay vi auto approve.
+- `/check-rules` van duoc giu cho tuong thich va test rieng, nhung auto flow chinh khong goi endpoint nay lan thu hai.
+- Model dang ky vong:
+  - `llama-3.1-8b-instant` cho text/rules.
+  - `meta-llama/llama-4-scout-17b-16e-instruct` cho image + text multimodal.
+
 ## Luong xu ly chinh
 
 1. `content.js` duoc inject vao Facebook o `document_idle`.
 2. `init()` load settings, tao floating button, setup listener va observer.
 3. MutationObserver goi lai scan khi Facebook re-render DOM.
 4. `findPendingPostCards()` tim cac card bai dang cho duyet.
-5. `buildCardPayload()` extract text, media count, links, mode, group/post id, client meta, group rules.
+5. `buildCardPayload()` extract text, `imageUrls`, media count, links, mode, group/post id, client meta, group rules.
 6. `scanCardAsync()` gui message `SCAN_PENDING_POST` den `background.js`.
-7. `background.js` goi `https://aidetect-web.vercel.app/api/v1/analyze` va tra ve `score`, `type`, `reason`, `signals`.
-8. `content.js` render badge neu score >= threshold.
+7. `background.js` goi `https://aidetect-web.vercel.app/api/v1/analyze` va tra ve `score`, `type`, `reason`, `signals`, `analysisMode`, `aiGenerated`, `ruleViolation`, `needsManualReview`.
+8. `content.js` render badge neu score >= threshold hoac co `aiGenerated` / `ruleViolation` / `needsManualReview`.
 9. Neu auto mode dang chay, `analyzeAndDecide()` tinh verdict va co the click approve/delete.
 
 ## Logic tim card Facebook
@@ -159,7 +177,7 @@ Cache nay nam trong service worker/background, nen van con sau khi Facebook relo
 
 Key cache gom:
 
-1. `hash:{contentHash}`: hash theo text/media/video da extract.
+1. `hash:{contentHash}`: hash theo text, media count, `imageUrls`, links va group rules da extract.
 2. `post:{id}`: post id lay tu `payload.links` hoac `payload.url`, gom `/pending_posts/{id}`, `set=gm.{id}`, `story_fbid`, `fbid`, `/posts/{id}`, `/permalink/{id}`.
 
 Luong xu ly trong `analyzePendingPost()`:
@@ -167,7 +185,9 @@ Luong xu ly trong `analyzePendingPost()`:
 1. Tinh `contentHash` tu payload neu content script chua gui.
 2. Tim cache bang `getCachedAnalysisResult(payload, contentHash)`.
 3. Neu co cache, tra result voi `cached: true`, khong goi backend API va khong tang stats scan.
-4. Neu chua co cache, goi `/analyze` hoac fallback heuristic khi API loi.
+4. Neu chua co cache, goi `/analyze` hoac fallback local khi API loi.
+   - Text-only fallback chi check rule local.
+   - Image/media fallback danh dau `needsManualReview` de auto khong approve nham.
 5. Luu result vao cache bang `setCachedAnalysisResult(payload, contentHash, result)`.
 
 Test nhanh da dung mock background: scan 2 payload cung post id nhung hash text khac nhe thi `fetchCount = 1`, lan 2 tra `cached: true`, stats `scanned` khong tang lai.
@@ -176,7 +196,7 @@ Test nhanh da dung mock background: scan 2 payload cung post id nhung hash text 
 
 Badge duoc render boi `renderBadge()` vao `.aidetect-admin-badge-host`, thuong gan sau header card.
 
-Neu score >= threshold:
+Neu score >= threshold hoac result co `aiGenerated` / `ruleViolation` / `needsManualReview`:
 
 - Hien badge canh bao.
 - Outline card mau do.
@@ -210,13 +230,19 @@ Endpoint extension dang dung:
   - `mode: "manual"` khong can license va khong tru quota.
   - `mode: "auto"` can License Key hop le va tru quota.
 - `POST /api/v1/check-rules`
-  - Dung cho auto rule check, khong tru quota lan thu hai.
+  - Legacy/standalone rule check, khong tru quota lan thu hai.
+  - Auto moderation hien tai lay rule verdict truc tiep tu `/analyze`.
 - `GET /api/v1/quota`
   - Popup/options dung de hien plan va quota con lai.
 - `POST /api/v1/feedback`
   - Badge gui feedback `false_positive`, `false_negative`, `wrong_reason`.
 
-Khi backend loi AI/timeout khong lien quan license/quota, `background.js` fallback ve heuristic scorer noi bo de extension van tra ket qua. Khi loi la missing/invalid license hoac quota exceeded, background tra result `blocked: true` de auto mode skip an toan va khong bypass quota.
+Khi backend loi AI/timeout khong lien quan license/quota, `background.js` fallback an toan:
+
+- Text-only post: chi check rule local, khong tinh diem AI text.
+- Image/media post: tra `needsManualReview: true` voi score canh bao de auto mode skip/khong approve nham.
+
+Khi loi la missing/invalid license hoac quota exceeded, background tra result `blocked: true` de auto mode skip an toan va khong bypass quota.
 
 HF Space backend trong `hf-space/` van la AI backend tham chieu, nhung extension khong goi truc tiep nua.
 
@@ -233,7 +259,13 @@ Output shape extension dang ky vong:
   type: string,
   reason: string,
   signals: [{ label: string, confidence: number }],
-  summary?: string
+  summary?: string,
+  analysisMode?: "rules_only" | "image_ai_and_rules" | "media_rules_only" | "fallback",
+  aiGenerated?: boolean,
+  ruleViolation?: boolean,
+  needsManualReview?: boolean,
+  aiScore?: number,
+  ruleScore?: number
 }
 ```
 
@@ -247,6 +279,8 @@ Popup cho phep:
 - Mo billing de upgrade plan.
 - Chinh threshold 70-95.
 - Nhap group rules.
+  - O rules co san rule mau ve spam, ban hang, noi dung gay hai, link la va ton trong thanh vien.
+  - Rule section hien trong ca manual va auto mode; chi an khi mode `off`.
 - Chon auto action.
 - Bat/tat auto moderation.
 - Reset stats.
@@ -322,6 +356,14 @@ Repo hien khong co package/test runner rieng. Co the check syntax bang Node:
 ```bash
 node --check B2B_Level\content.js
 node --check B2B_Level\background.js
+node --check B2B_Level\popup.js
+```
+
+Kiem tra manifest va backend tham chieu:
+
+```powershell
+Get-Content -Raw B2B_Level\manifest.json | ConvertFrom-Json | Out-Null
+python -m py_compile hf-space\app.py
 ```
 
 Kiem tra whitespace git:
@@ -338,7 +380,7 @@ git diff --check
 - Khi them cache moi, nen co fallback theo `contentHash`.
 - Khi update badge, can cap nhat ca warning count theo stable key de tranh dem trung.
 - Auto mode co click approve/delete that, nen test bang mock/manual truoc.
-- `USE_MOCK_REVIEW_DATA` dang la `false`; extension se goi backend AIDetect va fallback ve heuristic khi AI/backend loi khong phai license/quota.
+- `USE_MOCK_REVIEW_DATA` dang la `false`; extension se goi backend AIDetect. Fallback hien tai khong detect AI text, chi rule-check text-only va manual-review image/media khi AI/backend loi khong phai license/quota.
 
 ## Cac ham nen doc truoc khi sua
 
@@ -351,12 +393,15 @@ Trong `B2B_Level/content.js`:
 - `containsGroupAdminSidebarChrome()`
 - `containsPendingPageFilterChrome()`
 - `extractPendingPostText()`
+- `extractPostImageUrls()`
 - `buildCardPayload()`
 - `getCardStableKey()`
 - `hydrateCardFromStableState()`
 - `scanPendingPosts()`
 - `autoScanCycle()`
 - `analyzeAndDecide()`
+- `buildRulesResultFromAnalysis()`
+- `isWarningResult()`
 - `renderOrRemoveBadge()`
 
 Trong `B2B_Level/background.js`:
@@ -366,6 +411,8 @@ Trong `B2B_Level/background.js`:
 - `getCachedAnalysisResult()`
 - `setCachedAnalysisResult()`
 - `getPayloadAnalysisCacheKeys()`
+- `analyzeWithLocalFallback()`
+- `localRuleCheck()`
 - `getMockPendingPostResult()`
 - `handleGroupRulesCheck()`
 - `updateStats()`
@@ -380,3 +427,13 @@ Gan day da sua bug Facebook re-render, bo sot card o giua, badge gan nham sideba
 - Them debug log co the copy tu console.
 - Them guard de loai sidebar/header/filter toolbar khoi pending card candidates, tranh badge ve len ten group/sidebar.
 - Them persistent analysis cache trong `background.js` theo `hash:{contentHash}` va `post:{id}` de F5 khong goi lai backend API cho bai cu trong TTL 6 gio.
+
+Gan day da pivot detect logic theo chien luoc image AI + rules-only text:
+
+- `buildCardPayload()` gui them `imageUrls`, `imageCount`, `mediaCount`, `groupRules`.
+- Auto flow chi dung `/analyze`; rule verdict lay tu response thay vi goi `/check-rules` lan hai.
+- Text-only post dung `llama-3.1-8b-instant` de check rule, khong detect AI text.
+- Post co anh dung `meta-llama/llama-4-scout-17b-16e-instruct` de detect anh AI/misleading va check caption/rules.
+- Prompt vision da duoc tang rubric cho anh AI-like/synthetic: impossible anatomy, hybrid, fused body parts, surreal religious/public figures, painterly low-res texture, compositing artifacts, caption bait.
+- Backend co calibration nhe: neu model mo ta dau hieu synthetic/AI-like nhung cho diem thap, `/analyze` se nang `aiScore` len nguong manual review/canh bao phu hop.
+- Popup seed san group rules mau cho admin moi.

@@ -1768,7 +1768,7 @@
 
     const urls = [];
     card.querySelectorAll("img").forEach((image) => {
-      const src = normalizeMediaUrl(image.currentSrc || image.src || image.getAttribute("src") || "");
+      const src = normalizeMediaUrl(getBestImageUrl(image));
       if (!isLikelyPostImage(image, src)) return;
       urls.push(src);
     });
@@ -1779,6 +1779,43 @@
     });
 
     return Array.from(new Set(urls)).slice(0, 4);
+  }
+
+  function getBestImageUrl(image) {
+    if (!(image instanceof HTMLImageElement)) return "";
+
+    const candidates = [];
+    const addCandidate = (url, score) => {
+      const normalized = normalizeMediaUrl(url);
+      if (!normalized) return;
+      candidates.push({ url: normalized, score });
+    };
+
+    String(image.getAttribute("srcset") || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach((item) => {
+        const parts = item.split(/\s+/);
+        const descriptor = parts[parts.length - 1] || "";
+        const url = parts.length > 1 ? parts.slice(0, -1).join(" ") : parts[0];
+        const widthMatch = descriptor.match(/^(\d+)w$/i);
+        const densityMatch = descriptor.match(/^([\d.]+)x$/i);
+        const score = widthMatch
+          ? Number(widthMatch[1])
+          : densityMatch
+            ? Number(densityMatch[1]) * 1000
+            : 0;
+        addCandidate(url, score);
+      });
+
+    addCandidate(image.currentSrc, 900);
+    addCandidate(image.src, 800);
+    addCandidate(image.getAttribute("src"), 700);
+    addCandidate(image.getAttribute("data-src"), 650);
+
+    candidates.sort((first, second) => second.score - first.score);
+    return candidates[0]?.url || "";
   }
 
   function isLikelyPostImage(image, src) {
