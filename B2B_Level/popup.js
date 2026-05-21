@@ -1,12 +1,20 @@
 const VALID_MODES = new Set(["off", "manual", "auto"]);
 const VALID_AUTO_ACTIONS = new Set(["approve_only", "approve_and_delete"]);
+const DEFAULT_RULES_SEEDED_KEY = "aidetectAdminDefaultRulesSeeded";
+const DEFAULT_GROUP_RULES = [
+  "- Chỉ đăng nội dung liên quan trực tiếp đến chủ đề của cộng đồng.",
+  "- Không spam, seeding, quảng cáo, tuyển dụng hoặc bán hàng khi chưa được cho phép.",
+  "- Không dùng link rút gọn, link affiliate hoặc kéo thành viên sang nền tảng khác.",
+  "- Không đăng nội dung gây thù ghét, công kích cá nhân, lừa đảo hoặc thông tin sai lệch.",
+  "- Bài có ảnh/video cần đúng ngữ cảnh, không dùng ảnh AI gây hiểu nhầm hoặc câu tương tác."
+].join("\n");
 
 const DEFAULT_SETTINGS = {
   aidetectAdminEnabled: false,
   aidetectAdminMode: "off",
   aidetectAdminThreshold: 85,
   aidetectAdminMinTextLength: 8,
-  aidetectAdminGroupRules: "",
+  aidetectAdminGroupRules: DEFAULT_GROUP_RULES,
   aidetectAdminAutoSkipInvalid: false,
   aidetectAdminAutoAction: "approve_only",
   aidetectAdminAutoRunning: false
@@ -207,6 +215,12 @@ function buildSettingsMigration(items, settings) {
     migration.aidetectAdminAutoSkipInvalid = settings.aidetectAdminAutoSkipInvalid;
   }
 
+  if (!String(items.aidetectAdminGroupRules || "").trim() && !items[DEFAULT_RULES_SEEDED_KEY]) {
+    migration.aidetectAdminGroupRules = DEFAULT_GROUP_RULES;
+    migration[DEFAULT_RULES_SEEDED_KEY] = true;
+    settings.aidetectAdminGroupRules = DEFAULT_GROUP_RULES;
+  }
+
   const legacyEnabled = settings.aidetectAdminMode !== "off";
   if (!Object.prototype.hasOwnProperty.call(items, "aidetectAdminEnabled") || items.aidetectAdminEnabled !== legacyEnabled) {
     migration.aidetectAdminEnabled = legacyEnabled;
@@ -298,7 +312,9 @@ function updateModeUi(mode, autoRunning = false) {
 
 function updateSectionVisibility(mode) {
   elements.sectionThreshold.hidden = mode === "off";
-  elements.sectionRules.hidden = mode !== "auto";
+  elements.sectionRules.hidden = mode === "off";
+  elements.autoAction.hidden = mode !== "auto";
+  elements.startModeration.hidden = mode !== "auto";
 }
 
 function renderThreshold(value) {
@@ -398,7 +414,12 @@ function openOptionsPage() {
 
 function formatPlan(plan) {
   const value = String(plan || "free");
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  const labels = {
+    freemium: "Free",
+    starter: "Premium",
+    pro: "Elite"
+  };
+  return labels[value] || value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function clamp(value, min, max) {

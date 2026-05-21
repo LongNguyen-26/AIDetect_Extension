@@ -3,7 +3,7 @@
   "name": "AIDetect Admin - Group Post Review",
   "short_name": "AIDetect",
   "version": "1.1.0",
-  "description": "Detects AI-generated content in Facebook group posts waiting for admin approval through the AIDetect backend.",
+  "description": "Reviews Facebook group posts waiting for admin approval with image AI detection and group-rule checks.",
   "permissions": [
     "storage",
     "activeTab"

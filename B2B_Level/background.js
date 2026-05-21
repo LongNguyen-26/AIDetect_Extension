@@ -1,12 +1,19 @@
 const VALID_MODES = new Set(["off", "manual", "auto"]);
 const VALID_AUTO_ACTIONS = new Set(["approve_only", "approve_and_delete"]);
+const DEFAULT_GROUP_RULES = [
+  "- Chỉ đăng nội dung liên quan trực tiếp đến chủ đề của cộng đồng.",
+  "- Không spam, seeding, quảng cáo, tuyển dụng hoặc bán hàng khi chưa được cho phép.",
+  "- Không dùng link rút gọn, link affiliate hoặc kéo thành viên sang nền tảng khác.",
+  "- Không đăng nội dung gây thù ghét, công kích cá nhân, lừa đảo hoặc thông tin sai lệch.",
+  "- Bài có ảnh/video cần đúng ngữ cảnh, không dùng ảnh AI gây hiểu nhầm hoặc câu tương tác."
+].join("\n");
 
 const DEFAULT_SETTINGS = {
   aidetectAdminEnabled: false,
   aidetectAdminMode: "off",
   aidetectAdminThreshold: 85,
   aidetectAdminMinTextLength: 8,
-  aidetectAdminGroupRules: "",
+  aidetectAdminGroupRules: DEFAULT_GROUP_RULES,
   aidetectAdminAutoSkipInvalid: false,
   aidetectAdminAutoAction: "approve_only",
   aidetectAdminAutoRunning: false
@@ -290,6 +297,7 @@ async function analyzePendingPost(payload) {
   const text = normalizeText(typeof payload === "string" ? payload : payload?.text || "");
   const mediaCount = Number(payload?.mediaCount || 0);
   const videoCount = Number(payload?.videoCount || 0);
+  const imageUrls = normalizeImageUrls(payload?.imageUrls);
   const contentHash = getPayloadContentHash(payload, text, mediaCount, videoCount);
   const mode = payload?.mode === "auto" ? "auto" : "manual";
   const mockResult = getMockPendingPostResult(payload, text);
@@ -314,12 +322,12 @@ async function analyzePendingPost(payload) {
 
   let result = null;
   try {
-    result = await callAnalyzeApi(payload, text, mediaCount, videoCount);
+    result = await callAnalyzeApi(payload, text, mediaCount, videoCount, imageUrls);
   } catch (error) {
     console.error("AIDetect Admin analyze API error:", error);
     result = isBlockingApiError(error)
       ? buildBlockedAnalysisResult(error, payload, text, contentHash, mode)
-      : analyzeWithHeuristics(payload, text, mediaCount, videoCount);
+      : analyzeWithLocalFallback(payload, text, mediaCount, videoCount, imageUrls, error);
   }
 
   if (!result.blocked) {
@@ -328,7 +336,7 @@ async function analyzePendingPost(payload) {
   return result;
 }
 
-async function callAnalyzeApi(payload, text, mediaCount, videoCount) {
+async function callAnalyzeApi(payload, text, mediaCount, videoCount, imageUrls) {
   const mode = payload?.mode === "auto" ? "auto" : "manual";
   const headers = await getAuthHeaders();
   if (mode === "auto" && !headers.Authorization) {
@@ -346,7 +354,9 @@ async function callAnalyzeApi(payload, text, mediaCount, videoCount) {
       text: text.slice(0, MAX_TEXT_LENGTH_TO_SEND),
       mediaCount,
       imageCount: Number(payload?.imageCount || 0),
+      imageUrls,
       videoCount,
+      groupRules: String(payload?.groupRules || ""),
       contentHash: payload?.contentHash || "",
       mode,
       platform: payload?.platform || "facebook_group_admin",
@@ -369,6 +379,12 @@ async function callAnalyzeApi(payload, text, mediaCount, videoCount) {
     summary: String(data?.summary || text.slice(0, 220)).slice(0, 220),
     model: String(data?.model || ""),
     latencyMs: Number(data?.latency_ms || 0),
+    analysisMode: String(data?.analysis_mode || data?.analysisMode || inferAnalysisMode(imageUrls, mediaCount)),
+    aiGenerated: Boolean(data?.ai_generated ?? data?.aiGenerated ?? false),
+    ruleViolation: Boolean(data?.rule_violation ?? data?.ruleViolation ?? false),
+    needsManualReview: Boolean(data?.needs_manual_review ?? data?.needsManualReview ?? false),
+    aiScore: clamp(Math.round(Number(data?.ai_score ?? data?.aiScore ?? 0) || 0), 0, 100),
+    ruleScore: clamp(Math.round(Number(data?.rule_score ?? data?.ruleScore ?? 0) || 0), 0, 100),
     source: "api",
     mode
   };
@@ -393,7 +409,8 @@ async function callRulesApi(text, rules, payload = {}) {
       rules: rules.slice(0, 2000),
       mode,
       contentHash: payload?.contentHash || "",
-      source: payload?.source || "facebook_group_pending_post"
+      source: payload?.source || "facebook_group_pending_post",
+      imageUrls: normalizeImageUrls(payload?.imageUrls)
     })
   }, API_RULES_TIMEOUT_MS);
 
@@ -674,13 +691,24 @@ function normalizeApiSignals(signals, text, mediaCount, videoCount, score) {
   return normalized.length ? normalized : buildSignals(text, mediaCount, videoCount, score);
 }
 
+function normalizeImageUrls(value) {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(new Set(value
+    .map((url) => String(url || "").trim())
+    .filter((url) => /^https?:\/\//i.test(url))
+    .slice(0, 4)));
+}
+
 function getPayloadContentHash(payload, text, mediaCount, videoCount) {
   if (payload?.contentHash) return String(payload.contentHash);
 
   const normalized = [
     normalizeText(text || "").slice(0, 3000),
     Number(mediaCount || 0),
-    Number(videoCount || 0)
+    Number(videoCount || 0),
+    normalizeImageUrls(payload?.imageUrls).join("|").slice(0, 2400),
+    Array.isArray(payload?.links) ? payload.links.slice(0, 5).join("|").slice(0, 1200) : ""
   ].join("|");
 
   return fnv1a32(removeDiacritics(normalized.toLowerCase()));
@@ -835,29 +863,66 @@ function normalizeCachedAnalysisResult(result) {
     summary: String(result?.summary || "").slice(0, 220),
     model: String(result?.model || ""),
     latencyMs: Number(result?.latencyMs || result?.latency_ms || 0),
+    analysisMode: String(result?.analysisMode || result?.analysis_mode || ""),
+    aiGenerated: Boolean(result?.aiGenerated ?? result?.ai_generated ?? false),
+    ruleViolation: Boolean(result?.ruleViolation ?? result?.rule_violation ?? false),
+    needsManualReview: Boolean(result?.needsManualReview ?? result?.needs_manual_review ?? false),
+    aiScore: clamp(Math.round(Number(result?.aiScore ?? result?.ai_score ?? 0) || 0), 0, 100),
+    ruleScore: clamp(Math.round(Number(result?.ruleScore ?? result?.rule_score ?? 0) || 0), 0, 100),
     source: String(result?.source || ""),
     fallback: Boolean(result?.fallback)
   };
 }
 
-function analyzeWithHeuristics(payload, text, mediaCount, videoCount) {
+function analyzeWithLocalFallback(payload, text, mediaCount, videoCount, imageUrls, error) {
   const normalizedText = normalizeText(text || (typeof payload === "string" ? payload : payload?.text || ""));
   const normalizedMediaCount = Number.isFinite(mediaCount) ? mediaCount : Number(payload?.mediaCount || 0);
   const normalizedVideoCount = Number.isFinite(videoCount) ? videoCount : Number(payload?.videoCount || 0);
-  const textScore = scoreTextHeuristics(normalizedText);
-  const mediaScore = Math.min(14, normalizedMediaCount * 3 + normalizedVideoCount * 7);
-  const templateScore = scoreTemplateSignals(normalizedText);
-  const stability = stableScoreBoost(normalizedText);
-  const score = clamp(Math.round(textScore + mediaScore + templateScore + stability), 4, 98);
-  const signals = buildSignals(normalizedText, normalizedMediaCount, normalizedVideoCount, score);
+  const rules = normalizeText(payload?.groupRules || "");
+  const rulesResult = rules ? localRuleCheck(normalizedText, rules) : { violation: false, reason: "", score: 0 };
+  const hasInspectableImages = imageUrls.length > 0;
+  const hasMediaWithoutImages = normalizedMediaCount > 0 && !hasInspectableImages;
+  const needsManualReview = hasInspectableImages || hasMediaWithoutImages;
+  const score = needsManualReview
+    ? 88
+    : rulesResult.violation
+      ? Math.max(86, rulesResult.score)
+      : Math.max(0, rulesResult.score);
+  const signals = [
+    {
+      label: hasInspectableImages
+        ? "Không thể gọi model vision, cần duyệt ảnh thủ công"
+        : "Chỉ kiểm tra theo quy tắc nhóm",
+      confidence: score
+    }
+  ];
+
+  if (rulesResult.violation) {
+    signals.push({
+      label: "Vi phạm quy tắc nhóm",
+      confidence: rulesResult.score
+    });
+  }
 
   return {
     score,
-    type: inferContentType(normalizedMediaCount, normalizedVideoCount),
-    reason: buildReason(score, signals),
+    type: hasInspectableImages
+      ? "Ảnh cần duyệt thủ công"
+      : "Kiểm tra quy tắc nhóm",
+    reason: hasInspectableImages
+      ? "Không thể gọi AI backend để kiểm tra ảnh. Để tránh duyệt nhầm, bài này cần admin xem thủ công."
+      : rulesResult.reason || "Bài text-only được kiểm tra theo quy tắc nhóm; không chấm AI text.",
     signals,
     summary: normalizedText.slice(0, 220),
-    fallback: true
+    fallback: true,
+    source: "local_fallback",
+    analysisMode: hasInspectableImages ? "image_ai_and_rules" : "rules_only",
+    aiGenerated: false,
+    ruleViolation: rulesResult.violation,
+    needsManualReview,
+    aiScore: 0,
+    ruleScore: rulesResult.score,
+    model: `fallback:${error?.name || "api_error"}`
   };
 }
 
@@ -996,6 +1061,34 @@ function inferContentType(mediaCount, videoCount) {
   return "Văn bản trong bài đang chờ duyệt";
 }
 
+function inferAnalysisMode(imageUrls, mediaCount) {
+  if (Array.isArray(imageUrls) && imageUrls.length > 0) return "image_ai_and_rules";
+  if (Number(mediaCount || 0) > 0) return "media_rules_only";
+  return "rules_only";
+}
+
+function localRuleCheck(text, rules) {
+  const lowerText = removeDiacritics(text.toLowerCase());
+  const lowerRules = removeDiacritics(rules.toLowerCase());
+  const hasExternalLink = /\bhttps?:\/\//i.test(text) || lowerText.includes("www.");
+  const rulesProhibitLinks = lowerRules.includes("link") || lowerRules.includes("spam");
+  const hasAdTerms = ["quang cao", "ban hang", "tuyen dung", "affiliate", "seeding"].some((phrase) => lowerText.includes(phrase));
+  const rulesProhibitAds = ["quang cao", "ban hang", "tuyen dung", "spam", "seeding"].some((phrase) => lowerRules.includes(phrase));
+  const hasHostileTerms = ["lua dao", "scam", "cong kich", "chui", "thu ghet"].some((phrase) => lowerText.includes(phrase));
+  const rulesProhibitHostile = ["lua dao", "cong kich", "thu ghet", "sai lech"].some((phrase) => lowerRules.includes(phrase));
+  const violation = (hasExternalLink && rulesProhibitLinks)
+    || (hasAdTerms && rulesProhibitAds)
+    || (hasHostileTerms && rulesProhibitHostile);
+
+  return {
+    violation,
+    reason: violation
+      ? "Bài có dấu hiệu link ngoài, quảng cáo, spam hoặc nội dung xung đột với quy tắc group."
+      : "",
+    score: violation ? 86 : 8
+  };
+}
+
 function buildReason(score, signals) {
   const topSignal = signals[1]?.label || signals[0]?.label || "Tín hiệu tổng hợp";
 
@@ -1036,8 +1129,8 @@ async function updateStats(result) {
   const threshold = normalizedSettings.aidetectAdminThreshold;
 
   stats.scanned += 1;
-  if (result.score >= threshold) stats.warned += 1;
-  if (result.score >= 85) stats.highRisk += 1;
+  if (result.score >= threshold || result.ruleViolation || result.aiGenerated || result.needsManualReview) stats.warned += 1;
+  if (result.score >= 85 || result.ruleViolation || result.aiGenerated || result.needsManualReview) stats.highRisk += 1;
   if (result.autoApproved || result.action === "approved") stats.autoApproved += 1;
   if (result.autoDeleted || result.action === "deleted") stats.autoDeleted += 1;
 

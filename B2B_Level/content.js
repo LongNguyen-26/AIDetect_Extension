@@ -4,12 +4,19 @@
   const LOG_PREFIX = "AIDetect Admin";
   const VALID_MODES = new Set(["off", "manual", "auto"]);
   const VALID_AUTO_ACTIONS = new Set(["approve_only", "approve_and_delete"]);
+  const DEFAULT_GROUP_RULES = [
+    "- Chỉ đăng nội dung liên quan trực tiếp đến chủ đề của cộng đồng.",
+    "- Không spam, seeding, quảng cáo, tuyển dụng hoặc bán hàng khi chưa được cho phép.",
+    "- Không dùng link rút gọn, link affiliate hoặc kéo thành viên sang nền tảng khác.",
+    "- Không đăng nội dung gây thù ghét, công kích cá nhân, lừa đảo hoặc thông tin sai lệch.",
+    "- Bài có ảnh/video cần đúng ngữ cảnh, không dùng ảnh AI gây hiểu nhầm hoặc câu tương tác."
+  ].join("\n");
   const DEFAULT_SETTINGS = {
     aidetectAdminEnabled: false,
     aidetectAdminMode: "off",
     aidetectAdminThreshold: 85,
     aidetectAdminMinTextLength: 8,
-    aidetectAdminGroupRules: "",
+    aidetectAdminGroupRules: DEFAULT_GROUP_RULES,
     aidetectAdminAutoSkipInvalid: false,
     aidetectAdminAutoAction: "approve_only",
     aidetectAdminAutoRunning: false
@@ -195,7 +202,9 @@
     const normalized = [
       normalizeText(payload.text || "").slice(0, 3000),
       Number(payload.mediaCount || 0),
-      Number(payload.videoCount || 0)
+      Number(payload.videoCount || 0),
+      Array.isArray(payload.imageUrls) ? payload.imageUrls.slice(0, 4).join("|").slice(0, 2400) : "",
+      Array.isArray(payload.links) ? payload.links.slice(0, 5).join("|").slice(0, 1200) : ""
     ].join("|");
 
     return fnv1a32(removeDiacritics(normalized.toLowerCase()));
@@ -389,7 +398,8 @@
           rules,
           mode: context.mode || "auto",
           contentHash: context.contentHash || "",
-          source: context.source || ANALYZE_SOURCE
+          source: context.source || ANALYZE_SOURCE,
+          imageUrls: Array.isArray(context.imageUrls) ? context.imageUrls.slice(0, 4) : []
         }
       }, (response) => {
         if (chrome.runtime.lastError || !response) {
@@ -766,9 +776,7 @@
     }
 
     resultCache.set(card, aiResult);
-    const rulesResult = state.aidetectAdminGroupRules
-      ? await checkGroupRules(payload.text, state.aidetectAdminGroupRules, payload)
-      : null;
+    const rulesResult = buildRulesResultFromAnalysis(aiResult);
     const verdict = computeVerdict(aiResult, rulesResult);
 
     cardDecisions.set(card, verdict);
@@ -789,7 +797,7 @@
       return "skip";
     }
 
-    const isAiHigh = Number(aiResult?.score || 0) >= state.aidetectAdminThreshold;
+    const isAiHigh = aiResult?.aiGenerated === true || aiResult?.needsManualReview === true || Number(aiResult?.score || 0) >= state.aidetectAdminThreshold;
     const isRulesViolation = rulesResult?.violation === true;
     const isInvalid = isAiHigh || isRulesViolation;
 
@@ -797,6 +805,16 @@
     if (shouldSkipInvalidInAuto()) return "skip";
     if (state.aidetectAdminAutoAction === "approve_and_delete") return "delete";
     return "skip";
+  }
+
+  function buildRulesResultFromAnalysis(result) {
+    if (!result?.ruleViolation) return null;
+
+    return {
+      violation: true,
+      reason: result.reason || "Bài vi phạm quy tắc group.",
+      score: Number(result.ruleScore || result.score || 0)
+    };
   }
 
   async function executeDecision(card, verdict) {
@@ -1320,9 +1338,11 @@
       const rect = card.getBoundingClientRect();
       const text = extractPendingPostText(card);
       const mediaCount = countMedia(card);
+      const imageUrls = extractPostImageUrls(card);
       const contentHash = text || mediaCount ? buildContentHash({
         text,
         mediaCount,
+        imageUrls,
         videoCount: card.querySelectorAll("video").length
       }) : "";
       const controls = getVisibleActionControls(card);
@@ -1547,7 +1567,7 @@
     }
 
     resultCache.set(card, result);
-    setCachedCardState(card, contentHash, { result, warning: result.score >= state.aidetectAdminThreshold });
+    setCachedCardState(card, contentHash, { result, warning: isWarningResult(result) });
     if (!isManualModeActive()) return;
     renderOrRemoveBadge(card, result);
   }
@@ -1636,6 +1656,9 @@
     const postId = extractStablePostIdFromLinks(card);
     const groupId = extractGroupIdFromUrl(location.href);
     const mode = isAutoModeActive() ? "auto" : "manual";
+    const imageUrls = extractPostImageUrls(card);
+    const videoCount = card.querySelectorAll("video").length;
+    const mediaCount = imageUrls.length + videoCount + card.querySelectorAll("canvas").length;
 
     return {
       platform: "facebook_group_admin",
@@ -1645,9 +1668,10 @@
       cardIndex: assignCardIndex ? getCardIndex(card) : Number(card.dataset.aidetectAdminCardIndex || 0),
       url: location.href,
       text: text.slice(0, MAX_TEXT_LENGTH_TO_SEND),
-      mediaCount: countMedia(card),
-      imageCount: card.querySelectorAll("img").length,
-      videoCount: card.querySelectorAll("video").length,
+      mediaCount,
+      imageCount: imageUrls.length,
+      imageUrls,
+      videoCount,
       postId,
       groupId,
       links,
@@ -1739,12 +1763,57 @@
     return false;
   }
 
+  function extractPostImageUrls(card) {
+    if (!(card instanceof HTMLElement)) return [];
+
+    const urls = [];
+    card.querySelectorAll("img").forEach((image) => {
+      const src = normalizeMediaUrl(image.currentSrc || image.src || image.getAttribute("src") || "");
+      if (!isLikelyPostImage(image, src)) return;
+      urls.push(src);
+    });
+
+    card.querySelectorAll("video[poster]").forEach((video) => {
+      const poster = normalizeMediaUrl(video.getAttribute("poster") || "");
+      if (poster) urls.push(poster);
+    });
+
+    return Array.from(new Set(urls)).slice(0, 4);
+  }
+
+  function isLikelyPostImage(image, src) {
+    if (!(image instanceof HTMLImageElement)) return false;
+    if (!/^https?:\/\//i.test(src)) return false;
+    if (/emoji|static|profile|avatar|p_[a-z0-9]+\.png/i.test(src)) return false;
+
+    const rect = image.getBoundingClientRect();
+    const width = Math.max(rect.width, image.naturalWidth || 0);
+    const height = Math.max(rect.height, image.naturalHeight || 0);
+    if (width < 80 || height < 80) return false;
+    if (width < 120 && height < 120) return false;
+
+    const alt = removeDiacritics(String(image.alt || "").toLowerCase());
+    if (["anh dai dien", "avatar", "profile picture", "sticker"].some((label) => alt.includes(label))) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function normalizeMediaUrl(url) {
+    try {
+      return new URL(String(url || ""), location.href).href;
+    } catch (error) {
+      return "";
+    }
+  }
+
   function countMedia(card) {
-    return card.querySelectorAll("img, video, canvas").length;
+    return extractPostImageUrls(card).length + card.querySelectorAll("video, canvas").length;
   }
 
   function renderOrRemoveBadge(card, result) {
-    if (result.score >= state.aidetectAdminThreshold) {
+    if (isWarningResult(result)) {
       setCardWarningState(card, true);
       renderBadge(card, result);
       return;
@@ -1752,6 +1821,12 @@
 
     setCardWarningState(card, false);
     removeBadge(card);
+  }
+
+  function isWarningResult(result) {
+    if (!result) return false;
+    if (result.ruleViolation === true || result.aiGenerated === true || result.needsManualReview === true) return true;
+    return Number(result.score || 0) >= state.aidetectAdminThreshold;
   }
 
   function setCardWarningState(card, isWarning) {
@@ -1941,7 +2016,7 @@
           <span class="label">${decision.label}</span>
           ${ruleNote}
         </span>
-        <span class="score">AI: ${score}%</span>
+        <span class="score">Rủi ro: ${score}%</span>
       </div>
     `;
 
@@ -2048,6 +2123,7 @@
     const score = Math.round(Number(result.score) || 0);
     const reason = escapeHtml(result.reason || "Bài viết có nhiều dấu hiệu giống nội dung do AI tạo ra.");
     const type = escapeHtml(result.type || "Bài viết đang chờ duyệt");
+    const warningTitle = escapeHtml(getWarningTitle(result, score));
     const signals = Array.isArray(result.signals) ? result.signals.slice(0, 4) : [];
     const signalMarkup = signals.length
       ? signals.map((signal) => `
@@ -2202,11 +2278,11 @@
         }
       </style>
 
-      <div class="wrap" role="group" aria-label="AIDetect AI warning">
+      <div class="wrap" role="group" aria-label="AIDetect warning">
         <button class="main" type="button" data-aidetect-admin-toggle aria-expanded="false">
           <span class="icon" aria-hidden="true">!</span>
           <span class="label">
-            <span class="title">Cảnh báo nội dung có khả năng do AI tạo - ${score}%</span>
+            <span class="title">${warningTitle}</span>
             <span class="meta">${type}</span>
           </span>
           <span class="score">${score}%</span>
@@ -2223,6 +2299,22 @@
         </div>
       </div>
     `;
+  }
+
+  function getWarningTitle(result, score) {
+    if (result?.needsManualReview) {
+      return `Cảnh báo cần duyệt thủ công - ${score}%`;
+    }
+
+    if (result?.ruleViolation) {
+      return `Cảnh báo vi phạm quy tắc group - ${score}%`;
+    }
+
+    if (result?.aiGenerated || result?.analysisMode === "image_ai_and_rules") {
+      return `Cảnh báo ảnh có khả năng do AI tạo - ${score}%`;
+    }
+
+    return `Cảnh báo rủi ro kiểm duyệt - ${score}%`;
   }
 
   function refreshVisibleBadges() {

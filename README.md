@@ -198,6 +198,12 @@ const USE_MOCK_REVIEW_DATA = false;
 const AIDETECT_API_BASE = "https://aidetect-web.vercel.app";
 ```
 
+Deployment note:
+
+- Backend web hien deploy tren Vercel free tai `https://aidetect-web.vercel.app`.
+- Chua dung domain `https://aidetect.vn`.
+- Khi doi sang custom domain, cap nhat dong bo `AIDETECT_API_BASE`, link trong `options.html`, va `host_permissions` trong `manifest.json`.
+
 Endpoint extension dang dung:
 
 - `POST /api/v1/analyze`
