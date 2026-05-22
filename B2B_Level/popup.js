@@ -43,6 +43,9 @@ const elements = {
   highRiskCount: document.getElementById("highRiskCount"),
   autoApprovedCount: document.getElementById("autoApprovedCount"),
   autoDeletedCount: document.getElementById("autoDeletedCount"),
+  licensePanel: document.getElementById("licensePanel"),
+  licenseToggle: document.getElementById("licenseToggle"),
+  licenseDetails: document.getElementById("licenseDetails"),
   quotaPlan: document.getElementById("quotaPlan"),
   quotaText: document.getElementById("quotaText"),
   quotaFill: document.getElementById("quotaFill"),
@@ -73,6 +76,10 @@ function initPopup() {
 }
 
 function bindEvents() {
+  elements.licenseToggle.addEventListener("click", () => {
+    setLicensePanelExpanded(elements.licenseDetails.hidden);
+  });
+
   elements.modeButtons.forEach((button) => {
     button.addEventListener("click", () => {
       if (button.dataset.mode === "auto" && !canUseAutoModeration()) {
@@ -315,6 +322,13 @@ function updateSectionVisibility(mode) {
   elements.sectionRules.hidden = mode === "off";
   elements.autoAction.hidden = mode !== "auto";
   elements.startModeration.hidden = mode !== "auto";
+}
+
+function setLicensePanelExpanded(expanded) {
+  const nextExpanded = Boolean(expanded);
+  elements.licenseDetails.hidden = !nextExpanded;
+  elements.licenseToggle.setAttribute("aria-expanded", String(nextExpanded));
+  elements.licensePanel.classList.toggle("expanded", nextExpanded);
 }
 
 function renderThreshold(value) {

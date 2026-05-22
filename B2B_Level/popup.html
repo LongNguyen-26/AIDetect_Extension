@@ -167,16 +167,78 @@
     }
 
     .license-panel {
-      display: grid;
-      gap: 8px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--surface);
-      padding: 10px;
+      overflow: hidden;
     }
 
     .license-panel .row {
       margin-bottom: 0;
+    }
+
+    .license-summary {
+      display: grid;
+      width: 100%;
+      gap: 8px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      padding: 10px;
+      color: var(--text);
+      text-align: left;
+    }
+
+    .license-summary:hover {
+      background: #f3f4f6;
+    }
+
+    .license-summary:focus {
+      outline: 2px solid var(--blue);
+      outline-offset: -2px;
+    }
+
+    .license-summary-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+    }
+
+    .license-summary strong {
+      color: var(--red);
+      font-size: 14px;
+    }
+
+    .license-summary-right {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .collapse-icon {
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid var(--muted);
+      border-bottom: 2px solid var(--muted);
+      transform: rotate(45deg);
+      transition: transform 160ms ease;
+    }
+
+    .license-panel.expanded .collapse-icon {
+      transform: rotate(225deg);
+    }
+
+    .license-details {
+      display: grid;
+      gap: 8px;
+      padding: 0 10px 10px;
+    }
+
+    .license-details[hidden] {
+      display: none;
     }
 
     .quota-bar {
@@ -355,23 +417,30 @@
   </header>
 
   <section class="section">
-    <div class="license-panel" aria-live="polite">
-      <div class="row">
-        <span>License / plan</span>
-        <strong id="quotaPlan">Free</strong>
-      </div>
-      <div class="row">
-        <span>Auto quota</span>
-        <strong id="quotaText">0 / 0</strong>
-      </div>
-      <div class="quota-bar" aria-hidden="true">
-        <div class="quota-fill" id="quotaFill"></div>
-      </div>
-      <p class="quota-hint" id="quotaHint">Manual scan is free. Add a License Key to enable auto moderation.</p>
-      <div class="mini-actions">
-        <button type="button" id="openOptions">License</button>
-        <button type="button" id="refreshQuota">Refresh</button>
-        <button type="button" id="openBilling" class="primary-link">Upgrade</button>
+    <div class="license-panel" id="licensePanel" aria-live="polite">
+      <button type="button" id="licenseToggle" class="license-summary" aria-expanded="false" aria-controls="licenseDetails">
+        <span class="license-summary-top">
+          <span>License / plan</span>
+          <span class="license-summary-right">
+            <strong id="quotaPlan">Free</strong>
+            <span class="collapse-icon" aria-hidden="true"></span>
+          </span>
+        </span>
+        <span class="quota-bar" aria-hidden="true">
+          <span class="quota-fill" id="quotaFill"></span>
+        </span>
+      </button>
+      <div class="license-details" id="licenseDetails" hidden>
+        <div class="row">
+          <span>Auto quota</span>
+          <strong id="quotaText">0 / 0</strong>
+        </div>
+        <p class="quota-hint" id="quotaHint">Manual scan is free. Add a License Key to enable auto moderation.</p>
+        <div class="mini-actions">
+          <button type="button" id="openOptions">License</button>
+          <button type="button" id="refreshQuota">Refresh</button>
+          <button type="button" id="openBilling" class="primary-link">Upgrade</button>
+        </div>
       </div>
     </div>
   </section>
