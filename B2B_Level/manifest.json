@@ -6,7 +6,6 @@
   "description": "Reviews Facebook group posts waiting for admin approval with image AI detection and group-rule checks.",
   "icons": {
     "16": "assets/icon16.png",
-    "32": "assets/icon32.png",
     "48": "assets/icon48.png",
     "128": "assets/icon128.png"
   },
