@@ -111,7 +111,7 @@
   async function init() {
     console.info(`${LOG_PREFIX}: content script loaded`);
     await loadSettings();
-    injectFloatingButton();
+    // injectFloatingButton();
     updateFabMode(state.aidetectAdminMode);
     setupStorageListener();
     setupViewportScanner();
