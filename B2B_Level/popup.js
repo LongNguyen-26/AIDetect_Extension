@@ -17,7 +17,9 @@ const DEFAULT_SETTINGS = {
   aidetectAdminGroupRules: DEFAULT_GROUP_RULES,
   aidetectAdminAutoSkipInvalid: false,
   aidetectAdminAutoAction: "approve_only",
-  aidetectAdminAutoRunning: false
+  aidetectAdminAutoRunning: false,
+  aidetectAdminManualScanStarted: false,
+  aidetectAdminManualScanRequestId: 0
 };
 
 const DEFAULT_STATS = {
@@ -62,6 +64,8 @@ const elements = {
 const popupState = {
   mode: DEFAULT_SETTINGS.aidetectAdminMode,
   autoRunning: DEFAULT_SETTINGS.aidetectAdminAutoRunning,
+  manualScanStarted: DEFAULT_SETTINGS.aidetectAdminManualScanStarted,
+  manualScanRequestId: DEFAULT_SETTINGS.aidetectAdminManualScanRequestId,
   quota: null
 };
 
@@ -82,6 +86,10 @@ function bindEvents() {
 
   elements.modeButtons.forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.dataset.mode === popupState.mode) {
+        return;
+      }
+
       if (button.dataset.mode === "auto" && !canUseAutoModeration()) {
         openOptionsPage();
         flashStatus("License required");
@@ -119,6 +127,24 @@ function bindEvents() {
   });
 
   elements.startModeration.addEventListener("click", () => {
+    if (popupState.mode === "manual") {
+      const wasStarted = popupState.manualScanStarted;
+      const nextRequestId = Date.now();
+
+      popupState.manualScanStarted = true;
+      popupState.manualScanRequestId = nextRequestId;
+      saveSettings({
+        aidetectAdminMode: "manual",
+        aidetectAdminEnabled: true,
+        aidetectAdminAutoRunning: false,
+        aidetectAdminManualScanStarted: true,
+        aidetectAdminManualScanRequestId: nextRequestId
+      });
+      updateModeUi("manual", false, true);
+      flashStatus(wasStarted ? "Đang quét lại" : "Đang quét");
+      return;
+    }
+
     if (!canUseAutoModeration()) {
       openOptionsPage();
       flashStatus("License required");
@@ -129,7 +155,8 @@ function bindEvents() {
     saveSettings({
       aidetectAdminMode: "auto",
       aidetectAdminEnabled: true,
-      aidetectAdminAutoRunning: nextRunning
+      aidetectAdminAutoRunning: nextRunning,
+      aidetectAdminManualScanStarted: false
     });
     updateModeUi("auto", nextRunning);
   });
@@ -180,6 +207,14 @@ function setupStorageListener() {
     if (changes.aidetectAdminAutoRunning) {
       updateModeUi(popupState.mode, Boolean(changes.aidetectAdminAutoRunning.newValue));
     }
+
+    if (changes.aidetectAdminManualScanStarted) {
+      updateModeUi(popupState.mode, popupState.autoRunning, Boolean(changes.aidetectAdminManualScanStarted.newValue));
+    }
+
+    if (changes.aidetectAdminManualScanRequestId) {
+      popupState.manualScanRequestId = Number(changes.aidetectAdminManualScanRequestId.newValue || 0);
+    }
   });
 }
 
@@ -211,7 +246,9 @@ function buildSettingsMigration(items, settings) {
     "aidetectAdminGroupRules",
     "aidetectAdminAutoSkipInvalid",
     "aidetectAdminAutoAction",
-    "aidetectAdminAutoRunning"
+    "aidetectAdminAutoRunning",
+    "aidetectAdminManualScanStarted",
+    "aidetectAdminManualScanRequestId"
   ].forEach((key) => {
     if (!Object.prototype.hasOwnProperty.call(items, key)) {
       migration[key] = settings[key];
@@ -263,6 +300,8 @@ function normalizeSettings(items) {
   settings.aidetectAdminGroupRules = String(settings.aidetectAdminGroupRules || "");
   settings.aidetectAdminAutoSkipInvalid = settings.aidetectAdminAutoAction === "approve_only";
   settings.aidetectAdminAutoRunning = Boolean(settings.aidetectAdminAutoRunning);
+  settings.aidetectAdminManualScanStarted = Boolean(settings.aidetectAdminManualScanStarted);
+  settings.aidetectAdminManualScanRequestId = Math.max(0, Number(settings.aidetectAdminManualScanRequestId || 0));
 
   return settings;
 }
@@ -271,16 +310,17 @@ function applySettings(settings) {
   renderThreshold(settings.aidetectAdminThreshold);
   elements.groupRules.value = settings.aidetectAdminGroupRules;
   elements.autoAction.value = settings.aidetectAdminAutoAction;
-  updateModeUi(settings.aidetectAdminMode, settings.aidetectAdminAutoRunning);
+  updateModeUi(settings.aidetectAdminMode, settings.aidetectAdminAutoRunning, settings.aidetectAdminManualScanStarted);
 }
 
 function setMode(mode) {
   const normalizedMode = normalizeMode(mode);
-  updateModeUi(normalizedMode);
+  updateModeUi(normalizedMode, false, false);
   saveSettings({
     aidetectAdminMode: normalizedMode,
     aidetectAdminEnabled: normalizedMode !== "off",
-    aidetectAdminAutoRunning: false
+    aidetectAdminAutoRunning: false,
+    aidetectAdminManualScanStarted: false
   });
 }
 
@@ -288,13 +328,13 @@ function saveSettings(values) {
   chrome.storage.sync.set(values, () => flashStatus("Đã lưu"));
 }
 
-function updateModeUi(mode, autoRunning = false) {
+function updateModeUi(mode, autoRunning = false, manualScanStarted = popupState.manualScanStarted) {
   const copy = {
     off: {
       label: "Chưa kích hoạt"
     },
     manual: {
-      label: "Đang quét thủ công - hãy lướt bài"
+      label: manualScanStarted ? "Đang quét thủ công - hãy lướt bài" : "Đã chọn quét thủ công - bấm Bắt đầu quét"
     },
     auto: {
       label: autoRunning ? "Đang tự động kiểm duyệt" : "Đã chọn tự động - bấm Bắt đầu duyệt"
@@ -306,12 +346,17 @@ function updateModeUi(mode, autoRunning = false) {
 
   popupState.mode = normalizedMode;
   popupState.autoRunning = running;
+  popupState.manualScanStarted = normalizedMode === "manual" && Boolean(manualScanStarted);
 
   elements.modeButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.mode === normalizedMode);
   });
   elements.modeLabel.textContent = modeCopy.label;
-  elements.startModeration.textContent = running ? "Dừng duyệt" : "Bắt đầu duyệt";
+  if (normalizedMode === "manual") {
+    elements.startModeration.textContent = popupState.manualScanStarted ? "Bắt đầu quét lại" : "Bắt đầu quét";
+  } else {
+    elements.startModeration.textContent = running ? "Dừng duyệt" : "Bắt đầu duyệt";
+  }
   elements.startModeration.classList.toggle("running", running);
   elements.startModeration.disabled = normalizedMode === "auto" && !canUseAutoModeration();
   updateSectionVisibility(normalizedMode);
@@ -321,7 +366,7 @@ function updateSectionVisibility(mode) {
   elements.sectionThreshold.hidden = mode === "off";
   elements.sectionRules.hidden = mode === "off";
   elements.autoAction.hidden = mode !== "auto";
-  elements.startModeration.hidden = mode !== "auto";
+  elements.startModeration.hidden = mode === "off";
 }
 
 function setLicensePanelExpanded(expanded) {

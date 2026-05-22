@@ -300,6 +300,7 @@ async function analyzePendingPost(payload) {
   const imageUrls = normalizeImageUrls(payload?.imageUrls);
   const contentHash = getPayloadContentHash(payload, text, mediaCount, videoCount);
   const mode = payload?.mode === "auto" ? "auto" : "manual";
+  const forceRefresh = Boolean(payload?.forceRefresh);
   const mockResult = getMockPendingPostResult(payload, text);
 
   if (mockResult) {
@@ -311,7 +312,7 @@ async function analyzePendingPost(payload) {
     };
   }
 
-  const cachedResult = await getCachedAnalysisResult(payload, contentHash);
+  const cachedResult = forceRefresh ? null : await getCachedAnalysisResult(payload, contentHash);
   if (cachedResult) {
     return {
       ...cachedResult,
@@ -708,7 +709,8 @@ function getPayloadContentHash(payload, text, mediaCount, videoCount) {
     Number(mediaCount || 0),
     Number(videoCount || 0),
     normalizeImageUrls(payload?.imageUrls).join("|").slice(0, 2400),
-    getStableHashLinks(payload?.links).join("|").slice(0, 1200)
+    getStableHashLinks(payload?.links).join("|").slice(0, 1200),
+    normalizeText(payload?.groupRules || "").slice(0, 3000)
   ].join("|");
 
   return fnv1a32(removeDiacritics(normalized.toLowerCase()));
@@ -793,9 +795,14 @@ function getPayloadAnalysisCacheKeys(payload, contentHash) {
   if (contentHash) keys.push(`hash:${contentHash}`);
 
   const postId = extractPayloadStablePostId(payload);
-  if (postId) keys.push(`post:${postId}`);
+  if (postId) keys.push(`post:${postId}:${getPayloadRulesCacheScope(payload)}`);
 
   return Array.from(new Set(keys));
+}
+
+function getPayloadRulesCacheScope(payload) {
+  const rules = normalizeText(payload?.groupRules || "").slice(0, 3000);
+  return fnv1a32(removeDiacritics(rules.toLowerCase()));
 }
 
 function extractPayloadStablePostId(payload) {

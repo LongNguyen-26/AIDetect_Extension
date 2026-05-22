@@ -19,7 +19,9 @@
     aidetectAdminGroupRules: DEFAULT_GROUP_RULES,
     aidetectAdminAutoSkipInvalid: false,
     aidetectAdminAutoAction: "approve_only",
-    aidetectAdminAutoRunning: false
+    aidetectAdminAutoRunning: false,
+    aidetectAdminManualScanStarted: false,
+    aidetectAdminManualScanRequestId: 0
   };
   const FAB_HOST_ID = "aidetect-admin-fab-host";
   const MODE_ICON = { off: "AI", manual: "🔍", auto: "⚡" };
@@ -86,6 +88,7 @@
     scanTimer: null,
     manualScanQueue: [],
     manualScanQueueTimer: null,
+    manualScanForceRefresh: false,
     autoScanTimer: null,
     autoScrollTimer: null,
     intersectionObserver: null,
@@ -118,7 +121,7 @@
     setupDomObserver();
     if (isAutoModerationRunning()) {
       startAutoMode();
-    } else {
+    } else if (isManualModeActive()) {
       scheduleScan(150);
       setTimeout(() => scheduleScan(0), 1200);
     }
@@ -154,6 +157,8 @@
     settings.aidetectAdminAutoAction = normalizeAutoAction(settings.aidetectAdminAutoAction);
     settings.aidetectAdminAutoSkipInvalid = settings.aidetectAdminAutoAction === "approve_only";
     settings.aidetectAdminAutoRunning = Boolean(settings.aidetectAdminAutoRunning);
+    settings.aidetectAdminManualScanStarted = Boolean(settings.aidetectAdminManualScanStarted);
+    settings.aidetectAdminManualScanRequestId = Math.max(0, Number(settings.aidetectAdminManualScanRequestId || 0));
 
     return settings;
   }
@@ -171,7 +176,7 @@
   }
 
   function isManualModeActive() {
-    return state.aidetectAdminMode === "manual";
+    return state.aidetectAdminMode === "manual" && state.aidetectAdminManualScanStarted === true;
   }
 
   function isAutoModeActive() {
@@ -204,7 +209,8 @@
       Number(payload.mediaCount || 0),
       Number(payload.videoCount || 0),
       Array.isArray(payload.imageUrls) ? payload.imageUrls.slice(0, 4).join("|").slice(0, 2400) : "",
-      getStableHashLinks(payload.links).join("|").slice(0, 1200)
+      getStableHashLinks(payload.links).join("|").slice(0, 1200),
+      normalizeText(payload.groupRules || "").slice(0, 3000)
     ].join("|");
 
     return fnv1a32(removeDiacritics(normalized.toLowerCase()));
@@ -385,15 +391,17 @@
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
-  function scanCardAsync(payload) {
+  function scanCardAsync(payload, options = {}) {
     const contentHash = payload.contentHash || buildContentHash(payload);
+    const forceRefresh = Boolean(options.forceRefresh || payload.forceRefresh);
     payload.contentHash = contentHash;
+    payload.forceRefresh = forceRefresh;
 
-    if (contentHashCache.has(contentHash)) {
+    if (!forceRefresh && contentHashCache.has(contentHash)) {
       return Promise.resolve(contentHashCache.get(contentHash));
     }
 
-    if (pendingHashRequests.has(contentHash)) {
+    if (!forceRefresh && pendingHashRequests.has(contentHash)) {
       return pendingHashRequests.get(contentHash);
     }
 
@@ -641,13 +649,15 @@
     const normalizedMode = normalizeMode(mode);
     state.aidetectAdminMode = normalizedMode;
     state.aidetectAdminAutoRunning = false;
+    state.aidetectAdminManualScanStarted = false;
     updateFabMode(normalizedMode);
     closeFabMenu();
 
     chrome.storage.sync.set({
       aidetectAdminMode: normalizedMode,
       aidetectAdminEnabled: normalizedMode !== "off",
-      aidetectAdminAutoRunning: false
+      aidetectAdminAutoRunning: false,
+      aidetectAdminManualScanStarted: false
     });
 
     if (!isScanModeActive()) {
@@ -662,7 +672,7 @@
     }
 
     stopAutoMode();
-    scheduleScan(0);
+    stopManualScanTimer();
   }
 
   function closeFabMenu() {
@@ -976,6 +986,17 @@
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== "sync") return;
 
+      let manualScanRequestChanged = false;
+
+      if (changes.aidetectAdminManualScanStarted) {
+        state.aidetectAdminManualScanStarted = Boolean(changes.aidetectAdminManualScanStarted.newValue);
+      }
+
+      if (changes.aidetectAdminManualScanRequestId) {
+        state.aidetectAdminManualScanRequestId = Math.max(0, Number(changes.aidetectAdminManualScanRequestId.newValue || 0));
+        manualScanRequestChanged = true;
+      }
+
       if (changes.aidetectAdminMode) {
         state.aidetectAdminMode = normalizeMode(changes.aidetectAdminMode.newValue);
         if (changes.aidetectAdminAutoRunning) {
@@ -995,7 +1016,11 @@
           }
         } else {
           stopAutoMode();
-          scheduleScan(0);
+          if (isManualModeActive()) {
+            scheduleScan(0);
+          } else {
+            stopManualScanTimer();
+          }
         }
       }
 
@@ -1008,7 +1033,11 @@
           return;
         }
         stopAutoMode();
-        scheduleScan(0);
+        if (isManualModeActive()) {
+          scheduleScan(0);
+        } else {
+          stopManualScanTimer();
+        }
       }
 
       if (changes.aidetectAdminThreshold) {
@@ -1045,7 +1074,20 @@
         }
       }
 
-      if (isManualModeActive()) {
+      if (!state.aidetectAdminManualScanStarted) {
+        stopManualScanTimer();
+      }
+
+      const shouldScheduleManualScan = Boolean(
+        changes.aidetectAdminMode ||
+        changes.aidetectAdminEnabled ||
+        changes.aidetectAdminManualScanStarted
+      );
+
+      if (manualScanRequestChanged && isManualModeActive()) {
+        stopAutoMode();
+        scheduleScan(0, { forceRefresh: true });
+      } else if (shouldScheduleManualScan && isManualModeActive()) {
         scheduleScan(0);
       } else if (isAutoModerationRunning()) {
         scheduleAutoScan(300);
@@ -1084,7 +1126,10 @@
     state.observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  function scheduleScan(delay) {
+  function scheduleScan(delay, options = {}) {
+    if (options.forceRefresh) {
+      state.manualScanForceRefresh = true;
+    }
     window.clearTimeout(state.scanTimer);
     state.scanTimer = window.setTimeout(scanPendingPosts, delay);
   }
@@ -1093,9 +1138,17 @@
     if (!isManualModeActive()) return;
     if (!isLikelyGroupModerationPage()) return;
 
+    const forceRefresh = Boolean(state.manualScanForceRefresh);
+    state.manualScanForceRefresh = false;
+
     findPendingPostCards().forEach((card) => {
       const current = getCardPayloadAndHash(card);
       if (!current) return;
+
+      if (forceRefresh) {
+        enqueueManualScan(card, true);
+        return;
+      }
 
       const previousContentHash = card.dataset.aidetectAdminContentHash || "";
       const stableState = hydrateCardFromStableState(card, current, { renderManualBadge: true });
@@ -1574,7 +1627,7 @@
     const { payload, contentHash } = current;
     card.dataset.aidetectAdminContentHash = contentHash;
 
-    if (contentHashCache.has(contentHash)) {
+    if (!options.force && contentHashCache.has(contentHash)) {
       const cachedByHash = contentHashCache.get(contentHash);
       scannedCards.add(card);
       card.dataset.aidetectAdminScanned = "true";
@@ -1588,7 +1641,11 @@
     card.dataset.aidetectAdminScanned = "true";
     renderLoadingBadge(card);
 
-    const result = await scanCardAsync(payload);
+    if (options.force) {
+      payload.forceRefresh = true;
+    }
+
+    const result = await scanCardAsync(payload, { forceRefresh: options.force });
     if (!result) {
       setCachedCardState(card, contentHash, { result: null });
       removeBadge(card);

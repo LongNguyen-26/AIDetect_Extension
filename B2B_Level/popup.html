@@ -485,17 +485,13 @@
   <section class="section" id="sectionRules" hidden>
     <div class="row">
       <span>Quy tắc kiểm duyệt của group</span>
-      <span class="hint-inline" title="Text-only post chỉ kiểm tra theo quy tắc này. Post có ảnh sẽ kiểm tra ảnh AI và quy tắc.">i</span>
+      <span class="hint-inline" title="Quy tắc dùng để kiểm tra bài chờ duyệt.">i</span>
     </div>
     <textarea id="groupRules" rows="6" placeholder="Ví dụ:&#10;- Chỉ đăng nội dung liên quan trực tiếp đến chủ đề của cộng đồng.&#10;- Không spam, seeding, quảng cáo, tuyển dụng hoặc bán hàng khi chưa được cho phép.&#10;- Không dùng link rút gọn, link affiliate hoặc kéo thành viên sang nền tảng khác.&#10;- Không đăng nội dung gây thù ghét, công kích cá nhân, lừa đảo hoặc thông tin sai lệch.&#10;- Bài có ảnh/video cần đúng ngữ cảnh, không dùng ảnh AI gây hiểu nhầm hoặc câu tương tác."></textarea>
     <select id="autoAction">
-      <option value="approve_only">Flow 1: Chỉ duyệt bài hợp lệ</option>
+      <option value="approve_only">Chỉ duyệt bài hợp lệ</option>
       <option value="approve_and_delete">Flow 2: Duyệt hợp lệ và xóa bài vi phạm</option>
     </select>
-    <p class="hint">
-      Text-only post: chỉ kiểm tra theo quy tắc, không chấm AI text.<br>
-      Post có ảnh: kiểm tra ảnh AI bằng vision model và đối chiếu caption với quy tắc.
-    </p>
     <button type="button" class="start-button" id="startModeration">Bắt đầu duyệt</button>
   </section>
 
