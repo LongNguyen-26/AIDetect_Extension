@@ -45,8 +45,7 @@ const elements = {
   startAutoModeration: document.getElementById("startAutoModeration"),
   stopActiveMode: document.getElementById("stopActiveMode"),
   scannedCount: document.getElementById("scannedCount"),
-  warnedCount: document.getElementById("warnedCount"),
-  highRiskCount: document.getElementById("highRiskCount"),
+  invalidCount: document.getElementById("invalidCount"),
   autoApprovedCount: document.getElementById("autoApprovedCount"),
   autoDeletedCount: document.getElementById("autoDeletedCount"),
   licensePanel: document.getElementById("licensePanel"),
@@ -446,8 +445,7 @@ function renderQuota(quota) {
 
 function renderStats(stats) {
   elements.scannedCount.textContent = Number(stats.scanned || 0);
-  elements.warnedCount.textContent = Number(stats.warned || 0);
-  elements.highRiskCount.textContent = Number(stats.highRisk || 0);
+  elements.invalidCount.textContent = Math.max(Number(stats.warned || 0), Number(stats.highRisk || 0));
   elements.autoApprovedCount.textContent = Number(stats.autoApproved || 0);
   elements.autoDeletedCount.textContent = Number(stats.autoDeleted || 0);
 }
