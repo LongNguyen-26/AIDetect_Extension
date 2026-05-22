@@ -55,47 +55,41 @@
       line-height: 1.35;
     }
 
-    .mode-group {
+    .page-tabs {
       display: flex;
-      flex-wrap: nowrap;
-      gap: 4px;
-      flex: 0 0 auto;
+      gap: 6px;
+      margin-top: 12px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
     }
 
-    .mode-btn {
-      border: 1px solid var(--line);
+    .page-tab {
+      flex: 1;
+      border: 0;
       border-radius: 6px;
-      background: #ffffff;
+      background: transparent;
       color: var(--muted);
       cursor: pointer;
       font: inherit;
       font-weight: 600;
       font-size: 12px;
       line-height: 1.2;
-      padding: 6px 8px;
+      padding: 7px 8px;
       white-space: nowrap;
       transition: 120ms ease;
     }
 
-    .mode-btn.active[data-mode="manual"] {
-      border-color: var(--blue);
-      background: #dbeafe;
+    .page-tab.active {
+      background: #ffffff;
       color: var(--blue);
       font-weight: 700;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
     }
 
-    .mode-btn.active[data-mode="auto"] {
-      border-color: #16a34a;
-      background: #dcfce7;
-      color: #15803d;
-      font-weight: 700;
-    }
-
-    .mode-btn.active[data-mode="off"] {
-      border-color: #9ca3af;
-      background: #f3f4f6;
-      color: #6b7280;
-      font-weight: 700;
+    .page[hidden] {
+      display: none;
     }
 
     .section {
@@ -314,43 +308,6 @@
       line-height: 1.25;
     }
 
-    .legend {
-      display: grid;
-      gap: 7px;
-      margin-top: 12px;
-      padding: 10px;
-      border-radius: 8px;
-      background: #f9fafb;
-      font-size: 12px;
-      color: #374151;
-    }
-
-    .legend-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
-    .pill {
-      min-width: 64px;
-      border-radius: 999px;
-      padding: 4px 8px;
-      text-align: center;
-      font-weight: 700;
-      font-size: 11px;
-    }
-
-    .pill.red {
-      color: var(--red);
-      background: #fee2e2;
-    }
-
-    .pill.amber {
-      color: var(--amber);
-      background: #fef3c7;
-    }
-
     .actions {
       display: flex;
       justify-content: space-between;
@@ -374,25 +331,44 @@
       background: #f3f4f6;
     }
 
-    .start-button {
+    .action-stack {
+      display: grid;
+      gap: 8px;
+      padding-top: 10px;
+    }
+
+    .start-button,
+    .auto-button,
+    .stop-button {
       width: 100%;
-      margin-top: 10px;
-      border-color: #16a34a;
-      background: #16a34a;
       color: #ffffff;
       font-weight: 700;
     }
 
+    .start-button {
+      border-color: var(--blue);
+      background: var(--blue);
+    }
+
     .start-button:hover {
+      background: #0f5fca;
+    }
+
+    .auto-button {
+      border-color: #16a34a;
+      background: #16a34a;
+    }
+
+    .auto-button:hover {
       background: #15803d;
     }
 
-    .start-button.running {
+    .stop-button {
       border-color: #dc2626;
       background: #dc2626;
     }
 
-    .start-button.running:hover {
+    .stop-button:hover {
       background: #b91c1c;
     }
 
@@ -407,15 +383,16 @@
   <header class="header">
     <div class="brand">
       <strong>AIDetect Admin</strong>
-      <span id="modeLabel">Chưa kích hoạt</span>
-    </div>
-    <div class="mode-group" role="group" aria-label="Chế độ hoạt động">
-      <button type="button" id="btnOff" class="mode-btn active" data-mode="off">Tắt</button>
-      <button type="button" id="btnManual" class="mode-btn" data-mode="manual">Quét thủ công</button>
-      <button type="button" id="btnAuto" class="mode-btn" data-mode="auto">Tự động</button>
+      <span id="modeLabel">Sẵn sàng kiểm duyệt</span>
     </div>
   </header>
 
+  <nav class="page-tabs" aria-label="Trang popup">
+    <button type="button" id="tabMain" class="page-tab active" data-page="main">Kiểm duyệt</button>
+    <button type="button" id="tabStats" class="page-tab" data-page="stats">Thống kê</button>
+  </nav>
+
+  <main class="page" id="pageMain">
   <section class="section">
     <div class="license-panel" id="licensePanel" aria-live="polite">
       <button type="button" id="licenseToggle" class="license-summary" aria-expanded="false" aria-controls="licenseDetails">
@@ -454,57 +431,54 @@
     <p class="hint">Bài không vượt ngưỡng sẽ không hiển thị badge trên Facebook.</p>
   </section>
 
-  <section class="section">
-    <div class="row">
-      <span>Thống kê hôm nay</span>
-    </div>
-    <div class="stats">
-      <div class="stat">
-        <strong id="scannedCount">0</strong>
-        <span>Bài đã quét</span>
-      </div>
-      <div class="stat">
-        <strong id="warnedCount">0</strong>
-        <span>Có cảnh báo</span>
-      </div>
-      <div class="stat">
-        <strong id="highRiskCount">0</strong>
-        <span>Rủi ro cao</span>
-      </div>
-      <div class="stat">
-        <strong id="autoApprovedCount">0</strong>
-        <span>Auto duyệt</span>
-      </div>
-      <div class="stat">
-        <strong id="autoDeletedCount">0</strong>
-        <span>Auto xóa</span>
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="sectionRules" hidden>
+  <section class="section" id="sectionRules">
     <div class="row">
       <span>Quy tắc kiểm duyệt của group</span>
       <span class="hint-inline" title="Quy tắc dùng để kiểm tra bài chờ duyệt.">i</span>
     </div>
     <textarea id="groupRules" rows="6" placeholder="Ví dụ:&#10;- Chỉ đăng nội dung liên quan trực tiếp đến chủ đề của cộng đồng.&#10;- Không spam, seeding, quảng cáo, tuyển dụng hoặc bán hàng khi chưa được cho phép.&#10;- Không dùng link rút gọn, link affiliate hoặc kéo thành viên sang nền tảng khác.&#10;- Không đăng nội dung gây thù ghét, công kích cá nhân, lừa đảo hoặc thông tin sai lệch.&#10;- Bài có ảnh/video cần đúng ngữ cảnh, không dùng ảnh AI gây hiểu nhầm hoặc câu tương tác."></textarea>
-    <select id="autoAction">
+    <select id="autoAction" aria-label="Luồng duyệt tự động">
       <option value="approve_only">Chỉ duyệt bài hợp lệ</option>
-      <option value="approve_and_delete">Flow 2: Duyệt hợp lệ và xóa bài vi phạm</option>
+      <option value="approve_and_delete">Duyệt hợp lệ và xóa bài vi phạm</option>
     </select>
-    <button type="button" class="start-button" id="startModeration">Bắt đầu duyệt</button>
+    <div class="action-stack">
+      <button type="button" class="start-button" id="startManualScan">Bắt đầu quét - Duyệt thủ công</button>
+      <button type="button" class="auto-button" id="startAutoModeration">Bắt đầu duyệt tự động</button>
+      <button type="button" class="stop-button" id="stopActiveMode" hidden>Dừng quét</button>
+    </div>
   </section>
 
-  <section class="legend" aria-label="Mức phân loại AIDetect Admin">
-    <div class="legend-item">
-      <span>Hiển thị badge cảnh báo</span>
-      <span class="pill red" id="redLegend">≥85%</span>
-    </div>
-    <div class="legend-item">
-      <span>Không hiển thị trên bài</span>
-      <span class="pill amber" id="silentLegend">&lt;85%</span>
-    </div>
-  </section>
+  </main>
+
+  <main class="page" id="pageStats" hidden>
+    <section class="section">
+      <div class="row">
+        <span>Thống kê hôm nay</span>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <strong id="scannedCount">0</strong>
+          <span>Bài đã quét</span>
+        </div>
+        <div class="stat">
+          <strong id="warnedCount">0</strong>
+          <span>Có cảnh báo</span>
+        </div>
+        <div class="stat">
+          <strong id="highRiskCount">0</strong>
+          <span>Rủi ro cao</span>
+        </div>
+        <div class="stat">
+          <strong id="autoApprovedCount">0</strong>
+          <span>Auto duyệt</span>
+        </div>
+        <div class="stat">
+          <strong id="autoDeletedCount">0</strong>
+          <span>Auto xóa</span>
+        </div>
+      </div>
+    </section>
+  </main>
 
   <footer class="actions">
     <button type="button" id="resetStats">Đặt lại thống kê</button>

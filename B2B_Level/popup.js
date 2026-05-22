@@ -31,7 +31,9 @@ const DEFAULT_STATS = {
 };
 
 const elements = {
-  modeButtons: Array.from(document.querySelectorAll(".mode-btn")),
+  pageTabs: Array.from(document.querySelectorAll(".page-tab")),
+  pageMain: document.getElementById("pageMain"),
+  pageStats: document.getElementById("pageStats"),
   modeLabel: document.getElementById("modeLabel"),
   sectionThreshold: document.getElementById("sectionThreshold"),
   sectionRules: document.getElementById("sectionRules"),
@@ -39,7 +41,9 @@ const elements = {
   thresholdValue: document.getElementById("thresholdValue"),
   groupRules: document.getElementById("groupRules"),
   autoAction: document.getElementById("autoAction"),
-  startModeration: document.getElementById("startModeration"),
+  startManualScan: document.getElementById("startManualScan"),
+  startAutoModeration: document.getElementById("startAutoModeration"),
+  stopActiveMode: document.getElementById("stopActiveMode"),
   scannedCount: document.getElementById("scannedCount"),
   warnedCount: document.getElementById("warnedCount"),
   highRiskCount: document.getElementById("highRiskCount"),
@@ -55,8 +59,6 @@ const elements = {
   openOptions: document.getElementById("openOptions"),
   refreshQuota: document.getElementById("refreshQuota"),
   openBilling: document.getElementById("openBilling"),
-  redLegend: document.getElementById("redLegend"),
-  silentLegend: document.getElementById("silentLegend"),
   resetStats: document.getElementById("resetStats"),
   saveStatus: document.getElementById("saveStatus")
 };
@@ -72,6 +74,7 @@ const popupState = {
 document.addEventListener("DOMContentLoaded", initPopup);
 
 function initPopup() {
+  setActivePage("main");
   loadSettings((settings) => applySettings(settings));
   refreshStats();
   refreshQuota(false);
@@ -84,18 +87,9 @@ function bindEvents() {
     setLicensePanelExpanded(elements.licenseDetails.hidden);
   });
 
-  elements.modeButtons.forEach((button) => {
+  elements.pageTabs.forEach((button) => {
     button.addEventListener("click", () => {
-      if (button.dataset.mode === popupState.mode) {
-        return;
-      }
-
-      if (button.dataset.mode === "auto" && !canUseAutoModeration()) {
-        openOptionsPage();
-        flashStatus("License required");
-        return;
-      }
-      setMode(button.dataset.mode);
+      setActivePage(button.dataset.page || "main");
     });
   });
 
@@ -126,39 +120,34 @@ function bindEvents() {
     });
   });
 
-  elements.startModeration.addEventListener("click", () => {
-    if (popupState.mode === "manual") {
-      const wasStarted = popupState.manualScanStarted;
-      const nextRequestId = Date.now();
+  elements.startManualScan.addEventListener("click", startManualScan);
 
-      popupState.manualScanStarted = true;
-      popupState.manualScanRequestId = nextRequestId;
-      saveSettings({
-        aidetectAdminMode: "manual",
-        aidetectAdminEnabled: true,
-        aidetectAdminAutoRunning: false,
-        aidetectAdminManualScanStarted: true,
-        aidetectAdminManualScanRequestId: nextRequestId
-      });
-      updateModeUi("manual", false, true);
-      flashStatus(wasStarted ? "Đang quét lại" : "Đang quét");
-      return;
-    }
-
+  elements.startAutoModeration.addEventListener("click", () => {
     if (!canUseAutoModeration()) {
       openOptionsPage();
       flashStatus("License required");
       return;
     }
 
-    const nextRunning = !popupState.autoRunning;
     saveSettings({
       aidetectAdminMode: "auto",
       aidetectAdminEnabled: true,
-      aidetectAdminAutoRunning: nextRunning,
+      aidetectAdminAutoRunning: true,
       aidetectAdminManualScanStarted: false
     });
-    updateModeUi("auto", nextRunning);
+    updateModeUi("auto", true, false);
+    flashStatus("Đang duyệt tự động");
+  });
+
+  elements.stopActiveMode.addEventListener("click", () => {
+    saveSettings({
+      aidetectAdminMode: "off",
+      aidetectAdminEnabled: false,
+      aidetectAdminAutoRunning: false,
+      aidetectAdminManualScanStarted: false
+    });
+    updateModeUi("off", false, false);
+    flashStatus("Đã dừng");
   });
 
   elements.openOptions.addEventListener("click", openOptionsPage);
@@ -328,16 +317,43 @@ function saveSettings(values) {
   chrome.storage.sync.set(values, () => flashStatus("Đã lưu"));
 }
 
+function startManualScan() {
+  const nextRequestId = Date.now();
+
+  popupState.manualScanStarted = true;
+  popupState.manualScanRequestId = nextRequestId;
+  saveSettings({
+    aidetectAdminMode: "manual",
+    aidetectAdminEnabled: true,
+    aidetectAdminAutoRunning: false,
+    aidetectAdminManualScanStarted: true,
+    aidetectAdminManualScanRequestId: nextRequestId
+  });
+  updateModeUi("manual", false, true);
+  flashStatus("Đang quét");
+}
+
+function setActivePage(page) {
+  const normalizedPage = page === "stats" ? "stats" : "main";
+  elements.pageMain.hidden = normalizedPage !== "main";
+  elements.pageStats.hidden = normalizedPage !== "stats";
+  elements.resetStats.hidden = normalizedPage !== "stats";
+
+  elements.pageTabs.forEach((button) => {
+    button.classList.toggle("active", button.dataset.page === normalizedPage);
+  });
+}
+
 function updateModeUi(mode, autoRunning = false, manualScanStarted = popupState.manualScanStarted) {
   const copy = {
     off: {
-      label: "Chưa kích hoạt"
+      label: "Sẵn sàng kiểm duyệt"
     },
     manual: {
-      label: manualScanStarted ? "Đang quét thủ công - hãy lướt bài" : "Đã chọn quét thủ công - bấm Bắt đầu quét"
+      label: manualScanStarted ? "Đang quét - admin duyệt thủ công" : "Sẵn sàng quét - duyệt thủ công"
     },
     auto: {
-      label: autoRunning ? "Đang tự động kiểm duyệt" : "Đã chọn tự động - bấm Bắt đầu duyệt"
+      label: autoRunning ? "Đang duyệt tự động" : "Sẵn sàng duyệt tự động"
     }
   };
   const normalizedMode = normalizeMode(mode);
@@ -347,26 +363,18 @@ function updateModeUi(mode, autoRunning = false, manualScanStarted = popupState.
   popupState.mode = normalizedMode;
   popupState.autoRunning = running;
   popupState.manualScanStarted = normalizedMode === "manual" && Boolean(manualScanStarted);
-
-  elements.modeButtons.forEach((button) => {
-    button.classList.toggle("active", button.dataset.mode === normalizedMode);
-  });
   elements.modeLabel.textContent = modeCopy.label;
-  if (normalizedMode === "manual") {
-    elements.startModeration.textContent = popupState.manualScanStarted ? "Bắt đầu quét lại" : "Bắt đầu quét";
-  } else {
-    elements.startModeration.textContent = running ? "Dừng duyệt" : "Bắt đầu duyệt";
-  }
-  elements.startModeration.classList.toggle("running", running);
-  elements.startModeration.disabled = normalizedMode === "auto" && !canUseAutoModeration();
+
+  const manualRunning = normalizedMode === "manual" && popupState.manualScanStarted;
+  elements.stopActiveMode.hidden = !manualRunning && !running;
+  elements.stopActiveMode.textContent = running ? "Dừng duyệt tự động" : "Dừng quét";
   updateSectionVisibility(normalizedMode);
 }
 
 function updateSectionVisibility(mode) {
-  elements.sectionThreshold.hidden = mode === "off";
-  elements.sectionRules.hidden = mode === "off";
-  elements.autoAction.hidden = mode !== "auto";
-  elements.startModeration.hidden = mode === "off";
+  elements.sectionThreshold.hidden = false;
+  elements.sectionRules.hidden = false;
+  elements.autoAction.hidden = false;
 }
 
 function setLicensePanelExpanded(expanded) {
@@ -379,8 +387,6 @@ function setLicensePanelExpanded(expanded) {
 function renderThreshold(value) {
   elements.threshold.value = String(value);
   elements.thresholdValue.textContent = `${value}%`;
-  elements.redLegend.textContent = `≥${value}%`;
-  elements.silentLegend.textContent = `<${value}%`;
 }
 
 function refreshStats() {
@@ -433,7 +439,9 @@ function renderQuota(quota) {
     elements.quotaHint.textContent = `${remaining} auto moderation requests remaining this month.`;
   }
 
-  elements.startModeration.disabled = popupState.mode === "auto" && !canUseAutoModeration();
+  elements.startAutoModeration.title = canUseAutoModeration()
+    ? ""
+    : "Cần License Key còn quota để duyệt tự động.";
 }
 
 function renderStats(stats) {
